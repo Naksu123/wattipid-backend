@@ -1,0 +1,23 @@
+# Wattipid Security Hardening
+# Block access to sensitive files
+
+<FilesMatch "^\.env|setup\.sql|migration\.sql|constraints\.sql|indexes\.sql|\.git|\.htaccess|composer\.json|package\.json|package-lock\.json">
+    Order allow,deny
+    Deny from all
+</FilesMatch>
+
+# Prevent Directory Browsing
+Options -Indexes
+
+# Ensure PHP errors are not displayed to the user
+php_flag display_errors Off
+php_value error_reporting 0
+
+# Set Security Headers
+<IfModule mod_headers.c>
+    Header set X-Content-Type-Options "nosniff"
+    Header set X-Frame-Options "DENY"
+    Header set X-XSS-Protection "1; mode=block"
+    Header set Content-Security-Policy "default-src 'self'; script-src 'none'; object-src 'none';"
+    Header set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+</IfModule>

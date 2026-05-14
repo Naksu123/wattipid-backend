@@ -1,0 +1,336 @@
+<?php
+require_once __DIR__ . '/../repositories/UserRepository.php';
+require_once __DIR__ . '/../repositories/RoomRepository.php';
+require_once __DIR__ . '/../repositories/InvitationRepository.php';
+require_once __DIR__ . '/../repositories/PasswordResetRepository.php';
+
+// We require email_service since it holds the sendVerificationOTP global function
+require_once __DIR__ . '/../utils/email_service.php';
+
+class AuthService {
+    private $conn;
+    private $userRepo;
+    private $roomRepo;
+    private $invitationRepo;
+    private $passwordResetRepo;
+
+    public function __construct($dbConnection) {
+        $this->conn = $dbConnection; // Save connection for transactions
+        $this->userRepo = new UserRepository($dbConnection);
+        $this->roomRepo = new RoomRepository($dbConnection);
+        $this->invitationRepo = new InvitationRepository($dbConnection);
+        $this->passwordResetRepo = new PasswordResetRepository($dbConnection);
+    }
+
+    public function login($email, $password) {
+        $ip = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+        
+        // 1. Brute-force Protection (15-min lockout after 5 fails)
+        if ($this->isLockedOut($email)) {
+            return ['success' => false, 'message' => 'Account locked due to too many failed attempts. Try again in 15 minutes.'];
+        }
+
+        $user = $this->userRepo->findByEmail($email);
+
+        if (!$user || !password_verify($password, $user['password_hash'])) {
+            $this->logLoginAttempt($email, false, $ip);
+            return ['success' => false, 'message' => 'Invalid email or password'];
+        }
+
+        if (!$user['is_verified']) {
+            return ['success' => false, 'message' => 'Account not verified'];
+        }
+
+        // Success!
+        $this->logLoginAttempt($email, true, $ip);
+        $this->userRepo->updateLastLogin($user['id']);
+
+        // 2. Generate Dual Tokens (Access + Refresh)
+        // Access Token: Short-lived (15 mins), carries 'ver' (token_version)
+        $accessToken = $this->generateAccessToken($user);
+        
+        // Refresh Token: Long-lived (7 days), stored hashed in DB
+        $refreshToken = $this->generateAndStoreRefreshToken($user['id']);
+
+        unset($user['password_hash']);
+        return [
+            'success' => true,
+            'message' => 'Login successful',
+            'data' => [
+                'user' => $user,
+                'token' => $accessToken,
+                'refreshToken' => $refreshToken
+            ]
+        ];
+    }
+
+    private function isLockedOut($identifier) {
+        $stmt = $this->conn->prepare("SELECT COUNT(*) FROM login_attempts WHERE identifier = ? AND success = 0 AND attempt_time > DATE_SUB(NOW(), INTERVAL 15 MINUTE)");
+        $stmt->execute([$identifier]);
+        return (int)$stmt->fetchColumn() >= 5;
+    }
+
+    private function logLoginAttempt($identifier, $success, $ip) {
+        $stmt = $this->conn->prepare("INSERT INTO login_attempts (identifier, success, ip_address) VALUES (?, ?, ?)");
+        $stmt->execute([$identifier, $success ? 1 : 0, $ip]);
+    }
+
+    private function generateAccessToken($user) {
+        $payload = [
+            'id' => $user['id'],
+            'email' => $user['email'],
+            'role' => $user['role'],
+            'ver' => $user['token_version'], // Embed version for instant global revocation
+            'iat' => time(),
+            'exp' => time() + (60 * 15) // 15 Minutes
+        ];
+        return $this->createJWT($payload);
+    }
+
+    private function generateAndStoreRefreshToken($userId) {
+        $token = bin2hex(random_bytes(32));
+        $hash = hash('sha256', $token);
+        $expiry = date('Y-m-d H:i:s', time() + (3600 * 24 * 7)); // 7 Days
+
+        $stmt = $this->conn->prepare("INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)");
+        $stmt->execute([$userId, $hash, $expiry]);
+        
+        return $token;
+    }
+
+    public function refreshToken($refreshToken) {
+        $hash = hash('sha256', $refreshToken);
+        
+        // Find valid, non-revoked token
+        $stmt = $this->conn->prepare("SELECT * FROM refresh_tokens WHERE token_hash = ? AND revoked = 0 AND expires_at > NOW()");
+        $stmt->execute([$hash]);
+        $record = $stmt->fetch();
+
+        if (!$record) {
+            return ['success' => false, 'message' => 'Invalid or expired session. Please log in again.'];
+        }
+
+        // Token Rotation: Revoke the used one immediately
+        $this->conn->prepare("UPDATE refresh_tokens SET revoked = 1 WHERE id = ?")->execute([$record['id']]);
+
+        $user = $this->userRepo->findById($record['user_id']);
+        if (!$user) return ['success' => false, 'message' => 'User not found.'];
+
+        // Issue new pair (Rotation)
+        $newAccess = $this->generateAccessToken($user);
+        $newRefresh = $this->generateAndStoreRefreshToken($user['id']);
+
+        return [
+            'success' => true,
+            'data' => [
+                'token' => $newAccess,
+                'refreshToken' => $newRefresh
+            ]
+        ];
+    }
+
+    public function logout($userId) {
+        // 1. Revoke all sessions for this user
+        $stmt = $this->conn->prepare("UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?");
+        $stmt->execute([$userId]);
+        
+        // 2. Increment Token Version (Invalidates all active Access Tokens globally)
+        $stmt = $this->conn->prepare("UPDATE users SET token_version = token_version + 1 WHERE id = ?");
+        $stmt->execute([$userId]);
+
+        return ['success' => true, 'message' => 'Logged out successfully.'];
+    }
+
+    private function createJWT($payload) {
+        $header = json_encode(['alg' => 'HS256', 'typ' => 'JWT']);
+        $base64Header = str_replace(['+', '/', '='], ['-', '_', ''], base64_encode($header));
+        $base64Payload = str_replace(['+', '/', '='], ['-', '_', ''], base64_encode(json_encode($payload)));
+        $signature = hash_hmac('sha256', "$base64Header.$base64Payload", SECRET_KEY, true);
+        $base64Signature = str_replace(['+', '/', '='], ['-', '_', ''], base64_encode($signature));
+        return "$base64Header.$base64Payload.$base64Signature";
+    }
+
+    public function register($name, $email, $password, $role = 'tenant', $code = null) {
+        $roomId = null;
+
+        if ($role === 'tenant') {
+            if (!$code) {
+                return ['success' => false, 'message' => 'Access code is required for tenants'];
+            }
+
+            $invitation = $this->invitationRepo->findPendingByEmailAndCode($email, $code);
+            if (!$invitation) {
+                return ['success' => false, 'message' => 'Invalid or expired access code for this email'];
+            }
+            $roomId = $invitation['room_id'];
+        }
+
+        $passwordHash = password_hash($password, PASSWORD_DEFAULT);
+
+        try {
+            $this->conn->beginTransaction();
+
+            // 1. Create User
+            $userId = $this->userRepo->createUser($name, $email, $passwordHash, $role, $roomId);
+            if (!$userId) {
+                throw new Exception("Registration failed: Could not create user record.");
+            }
+
+            // 2. Room & Invitation Updates (Atomic)
+            if ($role === 'tenant' && $roomId) {
+                if (!$this->invitationRepo->markAsUsed($email, $code)) {
+                    throw new Exception("Registration failed: Could not invalidate invitation code.");
+                }
+                if (!$this->roomRepo->markAsOccupied($roomId, $name)) {
+                    throw new Exception("Registration failed: Could not assign room.");
+                }
+            }
+
+            // 3. Generate Initial Session for Landlord
+            $token = null;
+            $refreshToken = null;
+            if ($role === 'landlord') {
+                $user = $this->userRepo->findById($userId);
+                $token = $this->generateAccessToken($user);
+                $refreshToken = $this->generateAndStoreRefreshToken($userId);
+            }
+
+            $this->conn->commit();
+
+            if ($role === 'tenant') {
+                $emailResult = sendVerificationOTP($this->conn, $email, $name);
+                $response = [
+                    'success' => true,
+                    'message' => 'Registered successfully',
+                    'needsVerification' => true
+                ];
+                if (isset($emailResult['mockCode'])) {
+                    $response['mockCode'] = $emailResult['mockCode'];
+                }
+                return $response;
+            } else {
+                return [
+                    'success' => true,
+                    'message' => 'Registered successfully',
+                    'needsVerification' => false,
+                    'data' => [
+                        'user' => [
+                            'id' => $userId,
+                            'name' => $name,
+                            'email' => $email,
+                            'role' => $role
+                        ],
+                        'token' => $token,
+                        'refreshToken' => $refreshToken
+                    ]
+                ];
+            }
+
+        } catch (Exception $e) {
+            if ($this->conn->inTransaction()) {
+                $this->conn->rollBack();
+            }
+            error_log("Registration Transaction Error: " . $e->getMessage());
+            return ['success' => false, 'message' => 'Registration failed due to a system error. Please try again.'];
+        }
+    }
+
+    public function requestPasswordReset($email) {
+        $user = $this->userRepo->findByEmail($email);
+        if (!$user) {
+            // Anti-enumeration: still say it was sent even if the email doesn't exist
+            return ['success' => true, 'message' => 'If this email is registered, you will receive a reset code.'];
+        }
+
+        $otp = rand(100000, 999999);
+        $this->passwordResetRepo->createResetToken($email, $otp);
+
+        $subject = "Password Reset Code - Wattipid";
+        $body = "
+            <div style='font-family: sans-serif; padding: 20px;'>
+                <h2>Password Reset Request</h2>
+                <p>You requested to reset your Wattipid account password. Use the following code to proceed:</p>
+                <h1 style='color: #2196F3; letter-spacing: 5px;'>$otp</h1>
+                <p>This code will expire in 10 minutes.</p>
+                <hr/>
+                <p style='font-size: 12px; color: #666;'>If you didn't request this, please ignore this email.</p>
+            </div>
+        ";
+        
+        $result = sendEmail($email, "", $subject, $body);
+
+        if ($result['success']) {
+            return ['success' => true, 'message' => 'Reset code sent to your email'];
+        } else {
+            return ['success' => false, 'message' => 'Failed to send email. Please try again later.'];
+        }
+    }
+
+    public function verifyResetOTP($email, $otp) {
+        $resetId = $this->passwordResetRepo->findValidResetToken($email, $otp);
+        if ($resetId) {
+            return ['success' => true, 'message' => 'OTP verified successfully'];
+        }
+        return ['success' => false, 'message' => 'Invalid or expired reset code'];
+    }
+
+    public function resetPassword($email, $otp, $newPassword) {
+        try {
+            $this->conn->beginTransaction();
+
+            $resetId = $this->passwordResetRepo->findValidResetToken($email, $otp);
+            if (!$resetId) {
+                $this->conn->rollBack();
+                return ['success' => false, 'message' => 'Verification expired. Please start over.'];
+            }
+
+            $newPasswordHash = password_hash($newPassword, PASSWORD_DEFAULT);
+            
+            // Update the user's password (we need a method for this in UserRepository or we just do it here)
+            $stmt = $this->conn->prepare("UPDATE users SET password_hash = ? WHERE email = ?");
+            $stmt->execute([$newPasswordHash, $email]);
+
+            $this->passwordResetRepo->markAsUsed($resetId);
+
+            $this->conn->commit();
+            return ['success' => true, 'message' => 'Password reset successfully. You can now log in.'];
+
+        } catch (Exception $e) {
+            $this->conn->rollBack();
+            return ['success' => false, 'message' => 'Failed to reset password.'];
+        }
+    }
+
+    public function sendVerificationCode($email, $tenantName = null) {
+        // Rate limit check
+        $rateCheck = checkOTPRateLimit($this->conn, $email);
+        if (!$rateCheck['allowed']) {
+            return ['success' => false, 'message' => $rateCheck['message'], 'data' => ['wait_seconds' => $rateCheck['wait_seconds']]];
+        }
+
+        $otp = generateOTP();
+        storeOTP($this->conn, $email, $otp, 'verification');
+
+        $subject = 'Your Wattipid Verification Code: ' . $otp;
+        $htmlBody = getOTPEmailTemplate($tenantName ?: $email, $otp, 'verification');
+        $textBody = getOTPEmailPlainText($tenantName ?: $email, $otp, 'verification');
+        $emailResult = sendEmail($email, $tenantName, $subject, $htmlBody, $textBody);
+        
+        logEmailDelivery($this->conn, $email, 'verification', $emailResult['success'] ? 'sent' : 'failed', $emailResult['provider'] ?? 'unknown', $emailResult['success'] ? null : $emailResult['message']);
+
+        if ($emailResult['success']) {
+            $responseData = ['emailSent' => true];
+            if (EMAIL_PROVIDER === 'mock') {
+                $responseData['mockCode'] = $otp;
+            }
+            return ['success' => true, 'message' => 'Verification code sent to your email.', 'data' => $responseData];
+        } else {
+            return ['success' => false, 'message' => 'Failed to send verification email.', 'data' => ['error' => $emailResult['message']]];
+        }
+    }
+
+    public function verifyOTP($email, $code, $type = 'verification') {
+        $result = validateOTP($this->conn, $email, $code, $type);
+        return $result;
+    }
+}

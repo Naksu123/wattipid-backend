@@ -1,0 +1,18 @@
+# Sensitive Environment Variables (API Keys, DB Passwords)
+.env
+
+# Logs
+*.log
+email_debug.log
+
+# Operating System Files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# IDE Settings
+.vscode/
+.idea/
+
+# XAMPP/PHP noise
+php_error_log
