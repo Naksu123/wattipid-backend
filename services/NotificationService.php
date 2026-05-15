@@ -17,7 +17,13 @@ class NotificationService {
         return ['success' => true];
     }
 
-    public function getUnreadCount($roomId) {
+    public function getUnreadCount($roomId, $userId = null) {
+        if ($userId) {
+            // Try user-specific count first
+            $stmt = $this->notifRepo->getConn()->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0");
+            $stmt->execute([$userId]);
+            return ['success' => true, 'data' => (int) $stmt->fetchColumn()];
+        }
         return ['success' => true, 'data' => $this->notifRepo->getUnreadCount($roomId)];
     }
 

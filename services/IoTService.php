@@ -14,6 +14,14 @@ class IoTService {
     private $notifRepo;
     private $roomRepo;
 
+    // GHOST FIX: Validation constants for IoT data
+    const MAX_REALISTIC_POWER_WATTS = 5000;  // Max for residential submeter
+    const MAX_REALISTIC_VOLTAGE = 260;        // Max voltage + margin
+    const MIN_REALISTIC_VOLTAGE = 100;        // Min voltage - margin
+    const MAX_REALISTIC_CURRENT = 30;         // Max current amps
+    const MAX_ENERGY_DELTA = 5;               // Max kWh delta per reading
+    const MIN_LOG_INTERVAL_SECONDS = 3;       // Minimum seconds between logs (anti-spam)
+
     public function __construct($dbConnection) {
         $this->conn = $dbConnection;
         $this->consumptionRepo = new ConsumptionRepository($dbConnection);
@@ -23,41 +31,93 @@ class IoTService {
     }
 
     public function logConsumption($roomId, $voltage, $current, $power, $cumulativeEnergy) {
-        // --- 1. Cooldown Check ---
+        // ========================================
+        // GHOST FIX: IoT Data Validation Pipeline
+        // ========================================
+
+        // 1. Validate room exists
+        $stmt = $this->conn->prepare("SELECT room_id, tenant_name, device_secret, last_seen FROM rooms WHERE room_id = ? LIMIT 1");
+        $stmt->execute([$roomId]);
+        $room = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$room) {
+            return ['success' => false, 'error' => 'Room not found'];
+        }
+
+        // 2. Validate device is registered (has a device_secret)
+        if (empty($room['device_secret'])) {
+            return ['success' => false, 'error' => 'No IoT device registered for this room'];
+        }
+
+        // 3. Validate sensor readings are physically realistic
+        $validationErrors = [];
+        
+        if ($power < 0 || $power > self::MAX_REALISTIC_POWER_WATTS) {
+            $validationErrors[] = "Power out of range: {$power}W (max: " . self::MAX_REALISTIC_POWER_WATTS . "W)";
+        }
+        if ($voltage < self::MIN_REALISTIC_VOLTAGE || $voltage > self::MAX_REALISTIC_VOLTAGE) {
+            $validationErrors[] = "Voltage out of range: {$voltage}V";
+        }
+        if ($current < 0 || $current > self::MAX_REALISTIC_CURRENT) {
+            $validationErrors[] = "Current out of range: {$current}A";
+        }
+        if ($cumulativeEnergy < 0) {
+            $validationErrors[] = "Negative cumulative energy: {$cumulativeEnergy}";
+        }
+
+        if (!empty($validationErrors)) {
+            error_log("IoT Validation Failed for {$roomId}: " . implode(', ', $validationErrors));
+            return ['success' => false, 'error' => 'Invalid sensor data', 'details' => $validationErrors];
+        }
+
+        // 4. Anti-duplicate: Check minimum interval between logs
         $lastLog = $this->consumptionRepo->getLastLog($roomId);
+        if ($lastLog) {
+            $lastTime = strtotime($lastLog['timestamp']);
+            $timeDiff = time() - $lastTime;
+            if ($timeDiff < self::MIN_LOG_INTERVAL_SECONDS) {
+                return ['success' => true, 'skipped' => true, 'reason' => 'Too frequent'];
+            }
+        }
+
         $shouldRunEngine = !$lastLog || (time() - strtotime($lastLog['timestamp']) > 30);
 
-        // --- 2. Calculate Energy Delta & Cost ---
+        // --- Calculate Energy Delta & Cost ---
         $lastCumulative = $lastLog ? (float) $lastLog['energy_cumulative'] : 0;
         $energyDelta = ($cumulativeEnergy < $lastCumulative) ? $cumulativeEnergy : ($cumulativeEnergy - $lastCumulative);
-        if ($energyDelta > 5) $energyDelta = 0; // Safety cap
+        
+        // GHOST FIX: Safety cap for energy delta (prevents fake spikes)
+        if ($energyDelta > self::MAX_ENERGY_DELTA) {
+            error_log("IoT Safety Cap: Energy delta {$energyDelta} exceeds max " . self::MAX_ENERGY_DELTA . " for room {$roomId}");
+            $energyDelta = 0;
+        }
 
         $rate = $this->getRatePerKwh();
         $cost = $energyDelta * $rate;
 
-        // --- 3. Get Tenant Info & Update Room Activity ---
-        $stmt = $this->conn->prepare("SELECT tenant_name FROM rooms WHERE room_id = ? LIMIT 1");
-        $stmt->execute([$roomId]);
-        $room = $stmt->fetch();
-        $tenantName = $room ? $room['tenant_name'] : null;
+        $tenantName = $room['tenant_name'];
 
+        // --- Update Room Activity ---
         $stmt = $this->conn->prepare("UPDATE rooms SET last_seen = NOW() WHERE room_id = ?");
         $stmt->execute([$roomId]);
 
-        // --- 4. Insert the Log ---
+        // --- Insert the Log ---
         $this->consumptionRepo->insertLog($roomId, $tenantName, $voltage, $current, $power, $energyDelta, $cumulativeEnergy, $cost);
 
-        // --- 5. Fire Legacy Notification Engine (User Configured Alerts) ---
-        try {
-            $notifEngine = new NotificationEngine($this->conn);
-            $stmtUser = $this->conn->prepare("SELECT id FROM users WHERE room_id = ? AND role = 'tenant' LIMIT 1");
-            $stmtUser->execute([$roomId]);
-            $tenantUserId = $stmtUser->fetchColumn();
-            if ($tenantUserId) {
-                $notifEngine->checkAndNotify($roomId, $tenantUserId, $power, $tenantName);
+        // --- Fire Legacy Notification Engine (User Configured Alerts) ---
+        // GHOST FIX: Only fire if power > 0 and we have a valid tenant user
+        if ($power > 0) {
+            try {
+                $notifEngine = new NotificationEngine($this->conn);
+                $stmtUser = $this->conn->prepare("SELECT id FROM users WHERE room_id = ? AND role = 'tenant' LIMIT 1");
+                $stmtUser->execute([$roomId]);
+                $tenantUserId = $stmtUser->fetchColumn();
+                if ($tenantUserId) {
+                    $notifEngine->checkAndNotify($roomId, $tenantUserId, $power, $tenantName);
+                }
+            } catch (Exception $ne) {
+                // Do not block execution
+                error_log("NotificationEngine error: " . $ne->getMessage());
             }
-        } catch (Exception $ne) {
-            // Do not block execution
         }
 
         // If cooldown hasn't passed, skip the heavy TipsEngine
@@ -70,14 +130,21 @@ class IoTService {
         }
 
         // ==========================================
-        // --- 6. TIPSENGINE INTELLIGENCE PIPELINE ---
+        // --- TIPSENGINE INTELLIGENCE PIPELINE ---
         // ==========================================
         $totals = $this->consumptionRepo->getConsumptionTotals($roomId);
         $totalDaily = (float) ($totals['total_daily'] ?? 0);
         $totalWeekly = (float) ($totals['total_weekly'] ?? 0);
         $totalMonthly = (float) ($totals['total_monthly'] ?? 0);
 
-        $this->runTipsEngine($roomId, $tenantUserId, $power, $totalDaily, $totalWeekly, $totalMonthly);
+        // GHOST FIX: Only run tips engine if we have meaningful consumption data
+        $stmtUser = $this->conn->prepare("SELECT id FROM users WHERE room_id = ? AND role = 'tenant' LIMIT 1");
+        $stmtUser->execute([$roomId]);
+        $tenantUserId = $stmtUser->fetchColumn();
+        
+        if ($tenantUserId && $power > 0) {
+            $this->runTipsEngine($roomId, $tenantUserId, $power, $totalDaily, $totalWeekly, $totalMonthly);
+        }
 
         return [
             'success' => true,
@@ -87,8 +154,6 @@ class IoTService {
     }
 
     private function runTipsEngine($roomId, $userId, $power, $totalDaily, $totalWeekly, $totalMonthly) {
-        // ... (Skipping analytics and budget rules logic as it remains the same)
-        // [I will use multi_replace for the actual injection]
         // 1. Analytics
         $avgPower = $this->consumptionRepo->getRollingAveragePower($roomId, 10);
         if ($avgPower == 0) $avgPower = $power;
@@ -104,33 +169,32 @@ class IoTService {
 
         $alerts = [];
 
-        // RULE: Confirmed Spike
-        if ($power > 100 && $power >= ($avgPower * 1.8) && $isIncreasing) {
+        // GHOST FIX: Require confirmed spike with minimum power threshold
+        // AND at least 3 trend readings to confirm the spike is real
+        if ($power > 100 && $power >= ($avgPower * 1.8) && $isIncreasing && count($trend) >= 3) {
             $alerts[] = ['type' => 'alert', 'title' => '⚡ TipsEngine: Electricity Spike', 'message' => "Confirmed power spike detected: " . number_format($power, 0) . "W usage."];
         }
 
-        // RULE: Daily Budget
-        if ($dailyLimit > 0) {
+        // GHOST FIX: Only trigger budget alerts when there is REAL spending (totalDaily > 0)
+        if ($dailyLimit > 0 && $totalDaily > 0) {
             $pct = ($totalDaily / $dailyLimit) * 100;
             if ($pct >= 100) $alerts[] = ['type' => 'danger', 'title' => '🚨 TipsEngine: Daily Limit Exceeded', 'message' => "Daily allowance of ₱" . number_format($dailyLimit, 2) . " consumed."];
             else if ($pct >= 85) $alerts[] = ['type' => 'warning', 'title' => '⚠️ TipsEngine: Daily Limit Warning', 'message' => "You've used " . number_format($pct, 0) . "% of your daily allowance."];
         }
 
-        // RULE: Weekly Budget
-        if ($weeklyLimit > 0) {
+        if ($weeklyLimit > 0 && $totalWeekly > 0) {
             $pct = ($totalWeekly / $weeklyLimit) * 100;
             if ($pct >= 100) $alerts[] = ['type' => 'danger', 'title' => '🚨 TipsEngine: Weekly Limit Exceeded', 'message' => "Weekly budget of ₱" . number_format($weeklyLimit, 2) . " consumed."];
             else if ($pct >= 85) $alerts[] = ['type' => 'warning', 'title' => '⚠️ TipsEngine: Weekly Limit Warning', 'message' => "You've used " . number_format($pct, 0) . "% of your weekly budget."];
         }
 
-        // RULE: Monthly Budget
-        if ($monthlyLimit > 0) {
+        if ($monthlyLimit > 0 && $totalMonthly > 0) {
             $pct = ($totalMonthly / $monthlyLimit) * 100;
             if ($pct >= 100) $alerts[] = ['type' => 'danger', 'title' => '🚨 TipsEngine: Monthly Budget Exceeded', 'message' => "Monthly budget of ₱" . number_format($monthlyLimit, 2) . " consumed."];
             else if ($pct >= 85) $alerts[] = ['type' => 'warning', 'title' => '⚠️ TipsEngine: Monthly Budget Warning', 'message' => "You've used " . number_format($pct, 0) . "% of your monthly budget."];
         }
 
-        // 3. Dispatch Alerts
+        // 3. Dispatch Alerts — with cooldown check
         foreach ($alerts as $alert) {
             if (!$this->notifRepo->hasRecentAlert($roomId, $alert['title'], 30)) {
                 $this->notifRepo->insertNotification($roomId, $userId, $alert['type'], $alert['title'], $alert['message']);

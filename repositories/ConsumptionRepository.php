@@ -18,14 +18,16 @@ class ConsumptionRepository {
     }
 
     public function getRollingAveragePower($roomId, $limit = 10) {
-        $stmt = $this->conn->prepare("SELECT AVG(power) as avg_p FROM (SELECT power FROM consumption_logs WHERE room_id = ? ORDER BY timestamp DESC LIMIT $limit) as last_readings");
+        $limit = (int) $limit;
+        $stmt = $this->conn->prepare("SELECT AVG(power) as avg_p FROM (SELECT power FROM consumption_logs WHERE room_id = ? ORDER BY timestamp DESC LIMIT {$limit}) as last_readings");
         $stmt->execute([$roomId]);
         $row = $stmt->fetch();
         return $row ? (float) $row['avg_p'] : 0;
     }
 
     public function getTrendReadings($roomId, $limit = 3) {
-        $stmt = $this->conn->prepare("SELECT power FROM consumption_logs WHERE room_id = ? ORDER BY timestamp DESC LIMIT $limit");
+        $limit = (int) $limit;
+        $stmt = $this->conn->prepare("SELECT power FROM consumption_logs WHERE room_id = ? ORDER BY timestamp DESC LIMIT {$limit}");
         $stmt->execute([$roomId]);
         return $stmt->fetchAll(PDO::FETCH_COLUMN);
     }

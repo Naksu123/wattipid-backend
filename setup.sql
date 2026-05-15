@@ -129,6 +129,21 @@ CREATE TABLE IF NOT EXISTS settings (
     setting_value TEXT NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS electricity_tips (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    title VARCHAR(255) NOT NULL,
+    message TEXT NOT NULL,
+    category VARCHAR(100) NOT NULL,
+    icon VARCHAR(50) DEFAULT 'bulb-outline',
+    difficulty ENUM('Easy','Medium','Hard') DEFAULT 'Easy',
+    savings_level ENUM('Low','Moderate','High') DEFAULT 'Low',
+    dorm_relevance ENUM('Student','Apartment','Boarding House') DEFAULT 'Student',
+    is_active TINYINT(1) DEFAULT 1,
+    views_count INT DEFAULT 0,
+    likes_count INT DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS notifications (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     room_id VARCHAR(50) DEFAULT NULL,
@@ -193,6 +208,34 @@ CREATE TABLE IF NOT EXISTS jobs (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 SET FOREIGN_KEY_CHECKS = 1;
+
+-- ELECTRICITY TIPS
+CREATE TABLE IF NOT EXISTS electricity_tips (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    title VARCHAR(255) NOT NULL,
+    message TEXT NOT NULL,
+    category VARCHAR(100) NOT NULL DEFAULT 'General',
+    icon VARCHAR(100) DEFAULT 'bulb-outline',
+    difficulty ENUM('Easy', 'Medium', 'Hard') DEFAULT 'Easy',
+    savings_level ENUM('Low', 'Moderate', 'High') DEFAULT 'Low',
+    dorm_relevance ENUM('Student', 'Boarding House', 'Apartment') DEFAULT 'Student',
+    is_active TINYINT(1) DEFAULT 1,
+    views_count INT DEFAULT 0,
+    likes_count INT DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_category (category),
+    INDEX idx_active (is_active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- TIP VIEW LOG (Smart Recommendation Engine)
+CREATE TABLE IF NOT EXISTS tip_view_log (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    tip_id INT NOT NULL,
+    viewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_user_recent (user_id, viewed_at),
+    INDEX idx_tip (tip_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- SEED DATA
 INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('rate_per_kwh', '12.50'), ('db_version', '2.0.0');

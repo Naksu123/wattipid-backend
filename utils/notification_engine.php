@@ -30,6 +30,20 @@ class NotificationEngine {
         $settings = $this->getAlertSettings($userId, $roomId);
         if (!$settings['notifications_enabled']) return [];
 
+        // ====================================================
+        // GHOST FIX: Verify device is ACTUALLY connected
+        // before generating ANY alerts.
+        // ====================================================
+        if (!$this->isDeviceActive($roomId)) {
+            return []; // No real IoT data — suppress all alerts
+        }
+
+        // GHOST FIX: Validate currentPower is realistic
+        if ($currentPower < 0 || $currentPower > 5000) {
+            error_log("NotificationEngine: Ignoring unrealistic power reading: {$currentPower}W for room {$roomId}");
+            return [];
+        }
+
         $alerts = [];
 
         // Gather data once
@@ -78,8 +92,10 @@ class NotificationEngine {
         }
 
         // ---- CHECK 3: Abnormal Consumption ----
+        // GHOST FIX: Require minimum meaningful average (₱1 daily average) to prevent
+        // false abnormal alerts from tiny/zero baseline values
         $abnormalThreshold = $settings['abnormal_threshold_pct'];
-        if ($avg7Day['avgDailyCost'] > 0 && $todayData['totalCost'] > 0) {
+        if ($avg7Day['avgDailyCost'] > 1.0 && $todayData['totalCost'] > 1.0) {
             $abovePct = (($todayData['totalCost'] - $avg7Day['avgDailyCost']) / $avg7Day['avgDailyCost']) * 100;
             if ($abovePct >= $abnormalThreshold) {
                 $alerts[] = [
@@ -233,7 +249,6 @@ class NotificationEngine {
         
         $result = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
 
         if ($httpCode === 200) {
             $decoded = json_decode($result, true);
@@ -315,14 +330,19 @@ class NotificationEngine {
         return $stmt->fetch(PDO::FETCH_ASSOC);
     }
 
+    /**
+     * GHOST FIX: Fixed SQL INTERVAL binding — MariaDB emulated prepares
+     * treat '?' as string literal in INTERVAL clause. Inline the integer.
+     */
     private function checkContinuousHighUsage($roomId, $wattThreshold, $minutes) {
+        $minutes = (int) $minutes;
         $stmt = $this->conn->prepare("
             SELECT COUNT(*) as high_count, 
                    TIMESTAMPDIFF(MINUTE, MIN(timestamp), MAX(timestamp)) as duration
             FROM consumption_logs
-            WHERE room_id = ? AND power > ? AND timestamp >= DATE_SUB(NOW(), INTERVAL ? MINUTE)
+            WHERE room_id = ? AND power > ? AND timestamp >= DATE_SUB(NOW(), INTERVAL {$minutes} MINUTE)
         ");
-        $stmt->execute([$roomId, $wattThreshold, $minutes]);
+        $stmt->execute([$roomId, $wattThreshold]);
         $result = $stmt->fetch(PDO::FETCH_ASSOC);
         return $result && $result['high_count'] >= 3 && $result['duration'] >= ($minutes * 0.8);
     }
@@ -348,6 +368,23 @@ class NotificationEngine {
             ];
         }
         return null;
+    }
+
+    /**
+     * GHOST FIX: Check if an ESP32 device has been active (sent data) within the last 5 minutes.
+     * If no device is active, we should NOT generate any alerts.
+     */
+    private function isDeviceActive($roomId, $maxAgeMinutes = 5) {
+        $maxAgeMinutes = (int) $maxAgeMinutes;
+        $stmt = $this->conn->prepare("
+            SELECT COUNT(*) FROM rooms 
+            WHERE room_id = ? 
+            AND device_secret IS NOT NULL 
+            AND last_seen IS NOT NULL 
+            AND last_seen >= DATE_SUB(NOW(), INTERVAL {$maxAgeMinutes} MINUTE)
+        ");
+        $stmt->execute([$roomId]);
+        return $stmt->fetchColumn() > 0;
     }
 
     // ---- COOLDOWN & SPAM PREVENTION ----

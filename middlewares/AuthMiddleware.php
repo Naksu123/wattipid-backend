@@ -19,7 +19,7 @@ class AuthMiddleware {
         $headers = getallheaders();
         if ($headers) {
             foreach ($headers as $key => $value) {
-                if (strtolower($key) === 'authorization') {
+                if (strtolower($key) === 'authorization' || strtolower($key) === 'x-authorization') {
                     $authHeader = $value;
                     break;
                 }
@@ -30,7 +30,9 @@ class AuthMiddleware {
             $authHeader = $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '';
         }
 
-        if (empty($authHeader)) return null;
+        if (empty($authHeader)) {
+            ResponseHelper::error("Unauthorized: Missing authorization header.", 401);
+        }
 
         $token = str_replace('Bearer ', '', $authHeader);
         $payload = $this->verifyToken($token);

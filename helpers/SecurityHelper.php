@@ -15,7 +15,9 @@ class SecurityHelper {
                 $data[$key] = self::sanitize($value);
             }
         } else if (is_string($data)) {
-            $data = htmlspecialchars(strip_tags($data), ENT_QUOTES, 'UTF-8');
+            // For JSON APIs consumed by React Native, do not use htmlspecialchars 
+            // as it breaks characters like '&' and apostrophes.
+            $data = strip_tags($data);
         }
         return $data;
     }

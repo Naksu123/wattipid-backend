@@ -214,6 +214,18 @@ class Router {
             case 'likeTip':
                 $this->settingController->likeTip($data);
                 return true;
+            case 'viewTip':
+                $this->settingController->viewTip($authenticatedUser, $data);
+                return true;
+            case 'getSmartRecommendation':
+                $this->settingController->getSmartRecommendation($authenticatedUser, $data);
+                return true;
+            case 'getTipOfTheDay':
+                $this->settingController->getTipOfTheDay();
+                return true;
+            case 'getTrendingTips':
+                $this->settingController->getTrendingTips($data);
+                return true;
             case 'getElectricityTips':
                 $this->settingController->getTips();
                 return true;
