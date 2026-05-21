@@ -2,6 +2,7 @@
 /**
  * Global Configuration Loader for Wattipid
  */
+date_default_timezone_set('Asia/Manila');
 
 function loadEnv($path) {
     if (!file_exists($path)) return;

@@ -22,6 +22,15 @@ class DashboardController {
         return $roomId;
     }
 
+    public function getBillingCycle($user, $data) {
+        $roomId = $this->validateRoomAccess($data, $user);
+        $result = $this->dashboardService->getBillingCycleData($roomId, $user['id'], $user['role']);
+        if ($result['success'] === false) {
+            ResponseHelper::error($result['message'], 400);
+        }
+        ResponseHelper::sendRaw($result);
+    }
+
     public function getTotalConsumptionToday($user, $data) {
         $roomId = $this->validateRoomAccess($data, $user);
         $result = $this->dashboardService->getTotalConsumptionToday($roomId, $user['id'], $user['role']);
@@ -77,7 +86,9 @@ class DashboardController {
             $user['id'],
             $user['role'], 
             $data['limit'] ?? 50, 
-            $data['offset'] ?? 0
+            $data['offset'] ?? 0,
+            $data['filter'] ?? 'minute',
+            $data['date'] ?? null
         );
         ResponseHelper::sendRaw($result);
     }

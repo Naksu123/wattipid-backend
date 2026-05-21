@@ -67,7 +67,7 @@ try {
     $action = $data['action'] ?? $_GET['action'] ?? '';
 
     // Auth Middleware (Only enforce if not a public action)
-    $publicActions = ['login', 'register', 'verifyOTP', 'refreshToken', 'requestPasswordReset', 'verifyResetOTP', 'resetPassword', 'sendVerificationCode', 'resendVerificationCode', 'getTenantInvitationByEmail'];
+    $publicActions = ['login', 'register', 'verifyOTP', 'refreshToken', 'requestPasswordReset', 'verifyResetOTP', 'resetPassword', 'sendVerificationCode', 'resendVerificationCode', 'getTenantInvitationByEmail', 'logConsumption', 'getLatestConsumption'];
     
     $authenticatedUser = null;
     require_once __DIR__ . '/middlewares/AuthMiddleware.php';

@@ -1,18 +1,71 @@
 <?php
 require_once __DIR__ . '/../repositories/DashboardRepository.php';
 
+require_once __DIR__ . '/../repositories/UserRepository.php';
+
 class DashboardService {
     private $dashboardRepo;
+    private $userRepo;
+    private $conn;
 
     public function __construct($dbConnection) {
+        $this->conn = $dbConnection;
         $this->dashboardRepo = new DashboardRepository($dbConnection);
+        $this->userRepo = new UserRepository($dbConnection);
     }
 
     private function resolveIdentifier($roomId, $userId, $role) {
-        if ($role === 'tenant') {
-            return ['column' => 'user_id', 'value' => $userId];
-        }
         return ['column' => 'room_id', 'value' => $roomId];
+    }
+
+    private function checkAndResetBillingCycle($user) {
+        if ($user['role'] !== 'tenant') return $user;
+        
+        $currentDate = date('Y-m-d');
+        $endDate = $user['billing_end_date'];
+        
+        if ($endDate && $currentDate >= $endDate) {
+            // Cycle has ended, reset to new cycle
+            $stmt = $this->conn->prepare("UPDATE users SET billing_start_date = billing_end_date, billing_end_date = DATE_ADD(billing_end_date, INTERVAL 1 MONTH) WHERE id = ?");
+            $stmt->execute([$user['id']]);
+            // Re-fetch user
+            return $this->userRepo->findById($user['id']);
+        }
+        return $user;
+    }
+
+    public function getBillingCycleData($roomId, $userId, $role) {
+        $id = $this->resolveIdentifier($roomId, $userId, $role);
+        
+        // Landlords querying a room need to find the tenant for that room to get their billing dates
+        if ($role === 'landlord') {
+            $tenant = $this->userRepo->findTenantByRoom($roomId);
+            if (!$tenant) return ['success' => false, 'message' => 'No tenant found for this room'];
+            $fullUser = $this->userRepo->findById($tenant['id']);
+        } else {
+            $fullUser = $this->userRepo->findById($userId);
+        }
+        
+        if (!$fullUser || !$fullUser['billing_start_date'] || !$fullUser['billing_end_date']) {
+            return ['success' => false, 'message' => 'Billing cycle not initialized'];
+        }
+
+        $fullUser = $this->checkAndResetBillingCycle($fullUser);
+        
+        $start = $fullUser['billing_start_date'] . ' 00:00:00';
+        $end = $fullUser['billing_end_date'] . ' 00:00:00';
+        
+        $consumption = $this->dashboardRepo->getTotalConsumption($id['column'], $id['value'], $start, $end);
+        
+        return [
+            'success' => true,
+            'data' => [
+                'billing_start_date' => $fullUser['billing_start_date'],
+                'billing_end_date' => $fullUser['billing_end_date'],
+                'move_in_date' => $fullUser['move_in_date'],
+                'consumption' => $consumption
+            ]
+        ];
     }
 
     public function getTotalConsumptionToday($roomId, $userId, $role) {
@@ -108,9 +161,55 @@ class DashboardService {
         ];
     }
 
-    public function getTransactionHistory($roomId, $userId, $role, $limit, $offset) {
+    public function getTransactionHistory($roomId, $userId, $role, $limit, $offset, $filter = 'minute', $dateString = null) {
         $id = $this->resolveIdentifier($roomId, $userId, $role);
-        $data = $this->dashboardRepo->getTransactionHistory($id['column'], $id['value'], $limit, $offset);
-        return ['success' => true, 'data' => $data];
+        
+        $grouped = [];
+
+        if ($filter === 'minute') {
+            $rawLogs = $this->dashboardRepo->getTransactionHistory($id['column'], $id['value'], $limit, $offset, $dateString);
+            foreach ($rawLogs as $log) {
+                $dateTitle = date('F j, Y', strtotime($log['timestamp']));
+                $log['cost'] = abs((float)$log['cost']); // Fix negative bug
+                $log['time_label'] = date('g:i A', strtotime($log['timestamp']));
+                if (!isset($grouped[$dateTitle])) {
+                    $grouped[$dateTitle] = [];
+                }
+                $grouped[$dateTitle][] = $log;
+            }
+        } else {
+            $rawLogs = $this->dashboardRepo->getGroupedHistory($id['column'], $id['value'], $filter, $limit, $offset);
+            foreach ($rawLogs as $log) {
+                $log['cost'] = abs((float)$log['totalCost']);
+                $log['energy'] = (float)$log['totalEnergy'];
+                $log['power'] = (float)$log['avgPower'];
+                
+                if ($filter === 'daily') {
+                    $dateTitle = date('F Y', strtotime($log['group_date']));
+                    $log['time_label'] = date('F j', strtotime($log['group_date']));
+                } else if ($filter === 'weekly') {
+                    $dateTitle = substr($log['group_date'], 0, 4); // Year
+                    $log['time_label'] = 'Week ' . substr($log['group_date'], -2);
+                } else { // monthly
+                    $dateTitle = substr($log['group_date'], 0, 4); // Year
+                    $log['time_label'] = date('F', strtotime($log['group_date'] . '-01'));
+                }
+
+                if (!isset($grouped[$dateTitle])) {
+                    $grouped[$dateTitle] = [];
+                }
+                $grouped[$dateTitle][] = $log;
+            }
+        }
+
+        $formattedResponse = [];
+        foreach ($grouped as $title => $records) {
+            $formattedResponse[] = [
+                'title' => $title,
+                'data' => $records
+            ];
+        }
+
+        return ['success' => true, 'data' => $formattedResponse];
     }
 }

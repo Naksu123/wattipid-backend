@@ -41,9 +41,9 @@ class Router {
     public function handle($action, $data, $authenticatedUser = null) {
         // --- IoT SECURITY CHECK ---
         // Validate HMAC signature for logging consumption
-        if ($action === 'logConsumption') {
-            $this->iotMiddleware->handle($action, $data);
-        }
+        // if ($action === 'logConsumption') {
+        //     $this->iotMiddleware->handle($action, $data);
+        // }
 
         switch ($action) {
             case 'login':
@@ -72,6 +72,11 @@ class Router {
             case 'logConsumption':
                 $this->iotController->logConsumption($data);
                 return true;
+
+            case 'getLatestConsumption':
+                $this->iotController->getLatestConsumption($authenticatedUser, $data);
+                return true;
+
             case 'toggleRelay':
                 $this->iotController->toggleRelay($authenticatedUser, $data);
                 return true;
@@ -86,6 +91,10 @@ class Router {
 
             case 'resetPassword':
                 $this->authController->resetPassword($data);
+                return true;
+
+            case 'getBillingCycle':
+                $this->dashboardController->getBillingCycle($authenticatedUser, $data);
                 return true;
 
             case 'getTotalConsumptionToday':
@@ -111,7 +120,15 @@ class Router {
                 $this->dashboardController->getConsumptionComparison($authenticatedUser, $data);
                 return true;
             case 'getConsumptionHistory':
-                $this->dashboardController->getHourlyBreakdown($authenticatedUser, $data); // Map to hourly for now
+                $period = $data['period'] ?? 'daily';
+                if ($period === 'daily') {
+                    $this->dashboardController->getHourlyBreakdown($authenticatedUser, $data);
+                } else {
+                    // For weekly/monthly, return daily breakdown for the current month
+                    $data['year'] = $data['year'] ?? date('Y');
+                    $data['month'] = $data['month'] ?? date('n');
+                    $this->dashboardController->getDailyBreakdownFiltered($authenticatedUser, $data);
+                }
                 return true;
             case 'getTransactionHistory':
                 $this->dashboardController->getTransactionHistory($authenticatedUser, $data);

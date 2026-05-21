@@ -66,6 +66,9 @@ try {
         "token_version" => "ALTER TABLE users ADD COLUMN token_version INT DEFAULT 1 AFTER is_verified",
         "last_login_at" => "ALTER TABLE users ADD COLUMN last_login_at TIMESTAMP NULL AFTER token_version",
         "push_token" => "ALTER TABLE users ADD COLUMN push_token VARCHAR(255) DEFAULT NULL AFTER room_id",
+        "move_in_date" => "ALTER TABLE users ADD COLUMN move_in_date DATE DEFAULT NULL AFTER push_token",
+        "billing_start_date" => "ALTER TABLE users ADD COLUMN billing_start_date DATE DEFAULT NULL AFTER move_in_date",
+        "billing_end_date" => "ALTER TABLE users ADD COLUMN billing_end_date DATE DEFAULT NULL AFTER billing_start_date",
         "relay_state" => "ALTER TABLE rooms ADD COLUMN relay_state TINYINT(1) DEFAULT 1 AFTER last_seen",
         "tenant_log_name" => "ALTER TABLE consumption_logs ADD COLUMN tenant_name VARCHAR(255) DEFAULT NULL AFTER room_id"
     ];
@@ -79,25 +82,36 @@ try {
         }
     }
 
-    // 4. FORCE PROMOTE ADMIN
-    echo "<b>[4/4] Force-promoting Admin account...</b> ";
+    // 4. MIGRATE EXISTING TENANTS BILLING DATES
+    echo "<b>[4/5] Initializing Billing Cycles for existing tenants...</b> ";
+    $conn->exec("UPDATE users SET move_in_date = DATE(created_at), billing_start_date = DATE(created_at), billing_end_date = DATE_ADD(DATE(created_at), INTERVAL 1 MONTH) WHERE role = 'tenant' AND created_at IS NOT NULL");
+    echo "<span style='color:green'>Done.</span><br>";
+
+    // 5. FORCE PROMOTE ADMIN
+    echo "<b>[5/5] Force-promoting Admin account...</b> ";
     $promoteSql = "UPDATE users SET role = 'landlord', room_id = NULL WHERE email = 'admin@wattipid.com'";
     $conn->exec($promoteSql);
     echo "<span style='color:green'>Success! admin@wattipid.com is now a Landlord.</span><br>";
 
-    // 5. SEED DATA (Tips & Settings)
-    echo "<b>[5/5] Seeding Electricity Tips & Settings...</b><br>";
+    // 6. SEED DATA (Tips & Settings)
+    echo "<b>[6/6] Seeding Electricity Tips & Settings...</b><br>";
     
     // Drop and Recreate Tips Table to ensure correct schema
     $conn->exec("DROP TABLE IF EXISTS electricity_tips");
     $conn->exec("CREATE TABLE IF NOT EXISTS electricity_tips (
         id INT AUTO_INCREMENT PRIMARY KEY,
-        category VARCHAR(50),
-        title VARCHAR(255),
-        content TEXT,
-        likes INT DEFAULT 0,
+        title VARCHAR(255) NOT NULL,
+        message TEXT NOT NULL,
+        category VARCHAR(100) NOT NULL DEFAULT 'General',
+        icon VARCHAR(100) DEFAULT 'bulb-outline',
+        difficulty ENUM('Easy', 'Medium', 'Hard') DEFAULT 'Easy',
+        savings_level ENUM('Low', 'Moderate', 'High') DEFAULT 'Low',
+        dorm_relevance ENUM('Student', 'Boarding House', 'Apartment') DEFAULT 'Student',
+        is_active TINYINT(1) DEFAULT 1,
+        views_count INT DEFAULT 0,
+        likes_count INT DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
     // Create Settings Table if missing
     $conn->exec("CREATE TABLE IF NOT EXISTS settings (
@@ -115,7 +129,7 @@ try {
         ['General', 'Use Natural Light', 'Open your curtains during the day to reduce the need for artificial lighting.']
     ];
 
-    $stmtTip = $conn->prepare("INSERT IGNORE INTO electricity_tips (category, title, content) VALUES (?, ?, ?)");
+    $stmtTip = $conn->prepare("INSERT IGNORE INTO electricity_tips (category, title, message) VALUES (?, ?, ?)");
     foreach ($tips as $tip) $stmtTip->execute($tip);
 
     // Insert Default Rate
