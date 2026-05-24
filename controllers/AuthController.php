@@ -51,7 +51,7 @@ class AuthController {
         if ($result['success']) {
             ResponseHelper::success(null, $result['message']);
         } else {
-            ResponseHelper::error($result['message'], 500);
+            ResponseHelper::error($result['message'], 400);
         }
     }
 

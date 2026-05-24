@@ -52,8 +52,32 @@ class UserRepository {
     }
 
     public function updateProfile($userId, $name, $email) {
-        $stmt = $this->conn->prepare("UPDATE users SET name = ?, email = ? WHERE id = ?");
-        return $stmt->execute([$name, $email, $userId]);
+        try {
+            $this->conn->beginTransaction();
+            
+            $stmt = $this->conn->prepare("UPDATE users SET name = ?, email = ? WHERE id = ?");
+            $success = $stmt->execute([$name, $email, $userId]);
+            
+            if ($success) {
+                // Synchronize profile name with the rooms table if user is a tenant
+                $userStmt = $this->conn->prepare("SELECT role, room_id FROM users WHERE id = ?");
+                $userStmt->execute([$userId]);
+                $user = $userStmt->fetch(PDO::FETCH_ASSOC);
+                
+                if ($user && $user['role'] === 'tenant' && !empty($user['room_id'])) {
+                    $roomStmt = $this->conn->prepare("UPDATE rooms SET tenant_name = ? WHERE room_id = ?");
+                    $roomStmt->execute([$name, $user['room_id']]);
+                }
+            }
+            
+            $this->conn->commit();
+            return $success;
+        } catch (Exception $e) {
+            if ($this->conn->inTransaction()) {
+                $this->conn->rollBack();
+            }
+            return false;
+        }
     }
 
     public function updatePushToken($userId, $token) {

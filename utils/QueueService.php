@@ -28,15 +28,16 @@ class QueueService {
      * Fetches the next pending jobs for processing.
      */
     public function getPendingJobs($limit = 10) {
+        $limitInt = (int)$limit;
         $stmt = $this->conn->prepare("
             SELECT * FROM jobs 
             WHERE status = 'pending' 
             AND available_at <= NOW() 
             AND attempts < max_attempts 
             ORDER BY created_at ASC 
-            LIMIT ?
+            LIMIT $limitInt
         ");
-        $stmt->execute([$limit]);
+        $stmt->execute();
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 

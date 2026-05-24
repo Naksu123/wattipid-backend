@@ -6,7 +6,18 @@ class RoomRepository {
         $this->conn = $dbConnection;
     }
 
+    private function autoExpireRooms() {
+        $this->conn->exec("UPDATE invitations SET status = 'expired' WHERE status = 'pending' AND expires_at < NOW()");
+        $this->conn->exec("
+            UPDATE rooms r
+            LEFT JOIN invitations i ON r.room_id = i.room_id AND i.status = 'pending'
+            SET r.status = 'vacant'
+            WHERE r.status = 'on_process' AND i.email IS NULL
+        ");
+    }
+
     public function getAllRooms() {
+        $this->autoExpireRooms();
         $stmt = $this->conn->prepare("SELECT * FROM rooms ORDER BY room_id ASC");
         $stmt->execute();
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -31,6 +42,7 @@ class RoomRepository {
     }
 
     public function getBuildingSummary() {
+        $this->autoExpireRooms();
         $stmt = $this->conn->query("SELECT 
             COUNT(*) as totalRooms,
             COALESCE(SUM(CASE WHEN status = 'occupied' THEN 1 ELSE 0 END), 0) as occupiedRooms,
@@ -40,27 +52,30 @@ class RoomRepository {
         return $stmt->fetch(PDO::FETCH_ASSOC);
     }
 
-    public function getRoomsWithConsumption($currStart, $nextStart, $prevStart) {
+    public function getRoomsWithConsumption($currStart = null, $nextStart = null, $prevStart = null) {
+        $this->autoExpireRooms();
         $stmt = $this->conn->prepare("
             SELECT r.*, 
                    COALESCE(curr.totalEnergy, 0) as currEnergy,
                    COALESCE(prev.totalEnergy, 0) as prevEnergy
             FROM rooms r
             LEFT JOIN (
-                SELECT room_id, SUM(energy) as totalEnergy 
-                FROM consumption_logs 
-                WHERE timestamp >= ? AND timestamp < ?
-                GROUP BY room_id
+                SELECT c.room_id, SUM(c.energy) as totalEnergy 
+                FROM consumption_logs c
+                JOIN billing_cycles bc ON c.billing_cycle_id = bc.id AND bc.status = 'active'
+                GROUP BY c.room_id
             ) curr ON r.room_id = curr.room_id
             LEFT JOIN (
-                SELECT room_id, SUM(energy) as totalEnergy 
-                FROM consumption_logs 
-                WHERE timestamp >= ? AND timestamp < ?
-                GROUP BY room_id
+                SELECT bc1.room_id, bc1.total_kwh as totalEnergy 
+                FROM billing_cycles bc1
+                WHERE bc1.id = (
+                    SELECT MAX(bc2.id) FROM billing_cycles bc2 
+                    WHERE bc2.room_id = bc1.room_id AND bc2.status = 'completed'
+                )
             ) prev ON r.room_id = prev.room_id
             ORDER BY r.room_id ASC
         ");
-        $stmt->execute([$currStart, $nextStart, $prevStart, $currStart]);
+        $stmt->execute();
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 

@@ -123,8 +123,10 @@ class Router {
                 $period = $data['period'] ?? 'daily';
                 if ($period === 'daily') {
                     $this->dashboardController->getHourlyBreakdown($authenticatedUser, $data);
+                } elseif ($period === 'weekly') {
+                    $this->dashboardController->getWeeklyBreakdown($authenticatedUser, $data);
                 } else {
-                    // For weekly/monthly, return daily breakdown for the current month
+                    // For monthly, return daily breakdown for the requested month or current cycle
                     $data['year'] = $data['year'] ?? date('Y');
                     $data['month'] = $data['month'] ?? date('n');
                     $this->dashboardController->getDailyBreakdownFiltered($authenticatedUser, $data);
@@ -132,6 +134,9 @@ class Router {
                 return true;
             case 'getTransactionHistory':
                 $this->dashboardController->getTransactionHistory($authenticatedUser, $data);
+                return true;
+            case 'getAvailableBillingCycles':
+                $this->dashboardController->getAvailableBillingCycles($authenticatedUser, $data);
                 return true;
 
             // ROOMS

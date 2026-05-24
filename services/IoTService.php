@@ -106,10 +106,15 @@ class IoTService {
         $stmt = $this->conn->prepare("UPDATE rooms SET last_seen = NOW() WHERE room_id = ?");
         $stmt->execute([$roomId]);
 
+        // --- Fetch Active Billing Cycle (Lazy Evaluated) ---
+        require_once __DIR__ . '/BillingCycleService.php';
+        $billingService = new BillingCycleService($this->conn);
+        $billingCycleId = $billingService->getActiveCycleId($roomId);
+
         // --- Insert the Log ---
         try {
-            $this->consumptionRepo->insertLog($roomId, $tenantName, $voltage, $current, $power, $energyDelta, $cumulativeEnergy, $cost);
-            error_log("IoT DEBUG: INSERT SUCCESS for {$roomId}");
+            $this->consumptionRepo->insertLog($roomId, $tenantName, $voltage, $current, $power, $energyDelta, $cumulativeEnergy, $cost, $billingCycleId);
+            error_log("IoT DEBUG: INSERT SUCCESS for {$roomId} (Cycle ID: $billingCycleId)");
         } catch (Exception $e) {
             error_log("IoT DEBUG: INSERT FAILED for {$roomId}: " . $e->getMessage());
         }
@@ -180,10 +185,10 @@ class IoTService {
 
         $alerts = [];
 
-        // GHOST FIX: Require confirmed spike with minimum power threshold
-        // AND at least 3 trend readings to confirm the spike is real
-        if ($power > 100 && $power >= ($avgPower * 1.8) && $isIncreasing && count($trend) >= 3) {
-            $alerts[] = ['type' => 'alert', 'title' => '⚡ TipsEngine: Electricity Spike', 'message' => "Confirmed power spike detected: " . number_format($power, 0) . "W usage."];
+        // GHOST FIX: Adjusted spike logic for demonstration purposes
+        // Triggers instantly when a 300W+ appliance is plugged in, bypassing strict trend requirements
+        if ($power >= 300 && $power >= ($avgPower * 1.5)) {
+            $alerts[] = ['type' => 'alert', 'title' => '⚡ TipsEngine: Electricity Spike', 'message' => "Power spike detected: " . number_format($power, 0) . "W usage."];
         }
 
         // GHOST FIX: Only trigger budget alerts when there is REAL spending (totalDaily > 0)

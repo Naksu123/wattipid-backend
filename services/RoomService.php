@@ -33,7 +33,6 @@ class RoomService {
     public function getBuildingSummary() {
         $currMonthStart = date('Y-m-01');
         $nextMonthStart = date('Y-m-01', strtotime('first day of next month'));
-        $prevMonthStart = date('Y-m-01', strtotime('first day of last month'));
 
         $stats = $this->roomRepo->getBuildingSummary();
         
@@ -41,7 +40,7 @@ class RoomService {
         $stmt->execute([$currMonthStart, $nextMonthStart]);
         $totals = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        $rooms = $this->roomRepo->getRoomsWithConsumption($currMonthStart, $nextMonthStart, $prevMonthStart);
+        $rooms = $this->roomRepo->getRoomsWithConsumption();
 
         return [
             'success' => true,
@@ -80,23 +79,40 @@ class RoomService {
         try {
             $this->conn->beginTransaction();
 
-            // 1. Mark New Room as Occupied
-            if (!$this->roomRepo->updateStatus($toRoomId, 'occupied', $tenant['tenant_name'], $tenant['tenant_start_date'])) {
+            $today = date('Y-m-d');
+            $nextMonth = date('Y-m-d', strtotime('+1 month'));
+
+            // 1. Close any active billing cycle in the OLD room
+            $stmt = $this->conn->prepare("UPDATE billing_cycles SET status = 'completed', cycle_end = NOW() WHERE room_id = ? AND status = 'active'");
+            $stmt->execute([$fromRoomId]);
+
+            // 2. Close any lingering active billing cycle in the NEW room
+            $stmt = $this->conn->prepare("UPDATE billing_cycles SET status = 'completed', cycle_end = NOW() WHERE room_id = ? AND status = 'active'");
+            $stmt->execute([$toRoomId]);
+
+            // 3. Create a BRAND NEW billing cycle for the tenant in the NEW room
+            $stmt = $this->conn->prepare("INSERT INTO billing_cycles (room_id, cycle_start, cycle_end, status) VALUES (?, NOW(), DATE_ADD(NOW(), INTERVAL 1 MONTH), 'active')");
+            $stmt->execute([$toRoomId]);
+
+            // 4. Mark New Room as Occupied (starting today)
+            if (!$this->roomRepo->updateStatus($toRoomId, 'occupied', $tenant['tenant_name'], $today)) {
                 throw new Exception("Transfer failed: Could not occupy new room.");
             }
 
-            // 2. Mark Old Room as Vacant
+            // 5. Mark Old Room as Vacant
             if (!$this->roomRepo->markAsVacant($fromRoomId)) {
                 throw new Exception("Transfer failed: Could not vacate old room.");
             }
 
-            // 3. Update User Record & Archive History
+            // 6. Update User Record & Archive History
             $user = $this->userRepo->findTenantByRoom($fromRoomId);
             if ($user) {
+                // Archive their stay in the old room
                 $this->historyRepo->archiveTenant($fromRoomId, $tenant['tenant_name'], $user['email'] ?? 'unknown', $tenant['tenant_start_date'], 'transferred');
                 
-                $stmt = $this->conn->prepare("UPDATE users SET room_id = ? WHERE id = ?");
-                $stmt->execute([$toRoomId, $user['id']]);
+                // Move them to the new room and reset their billing dates
+                $stmt = $this->conn->prepare("UPDATE users SET room_id = ?, move_in_date = ?, billing_start_date = ?, billing_end_date = ? WHERE id = ?");
+                $stmt->execute([$toRoomId, $today, $today, $nextMonth, $user['id']]);
             }
 
             $this->conn->commit();

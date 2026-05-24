@@ -25,13 +25,14 @@ class DashboardRepository {
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
-    public function getTransactionHistory($identifier, $val, $limit, $offset, $dateString = null) {
-        if ($dateString) {
-            $stmt = $this->conn->prepare("SELECT * FROM consumption_logs WHERE $identifier = ? AND DATE(timestamp) = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?");
+    public function getTransactionHistory($identifier, $val, $limit, $offset, $startDate = null, $endDate = null) {
+        if ($startDate && $endDate) {
+            $stmt = $this->conn->prepare("SELECT * FROM consumption_logs WHERE $identifier = ? AND timestamp >= ? AND timestamp <= ? ORDER BY timestamp DESC LIMIT ? OFFSET ?");
             $stmt->bindValue(1, $val);
-            $stmt->bindValue(2, $dateString);
-            $stmt->bindValue(3, (int)$limit, PDO::PARAM_INT);
-            $stmt->bindValue(4, (int)$offset, PDO::PARAM_INT);
+            $stmt->bindValue(2, $startDate);
+            $stmt->bindValue(3, $endDate);
+            $stmt->bindValue(4, (int)$limit, PDO::PARAM_INT);
+            $stmt->bindValue(5, (int)$offset, PDO::PARAM_INT);
         } else {
             $stmt = $this->conn->prepare("SELECT * FROM consumption_logs WHERE $identifier = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?");
             $stmt->bindValue(1, $val);
@@ -42,7 +43,7 @@ class DashboardRepository {
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
-    public function getGroupedHistory($identifier, $val, $filter, $limit, $offset) {
+    public function getGroupedHistory($identifier, $val, $filter, $limit, $offset, $startDate = null, $endDate = null) {
         $groupBy = "";
         $select = "SUM(energy) as totalEnergy, SUM(cost) as totalCost, AVG(power) as avgPower, MAX(power) as peakPower, COUNT(*) as entries";
         
@@ -57,12 +58,21 @@ class DashboardRepository {
             $select .= ", CONCAT(YEAR(timestamp), '-', LPAD(MONTH(timestamp), 2, '0')) as group_date";
         }
 
-        $query = "SELECT $select FROM consumption_logs WHERE $identifier = ? $groupBy ORDER BY timestamp DESC LIMIT ? OFFSET ?";
-        
-        $stmt = $this->conn->prepare($query);
-        $stmt->bindValue(1, $val);
-        $stmt->bindValue(2, (int)$limit, PDO::PARAM_INT);
-        $stmt->bindValue(3, (int)$offset, PDO::PARAM_INT);
+        if ($startDate && $endDate) {
+            $query = "SELECT $select FROM consumption_logs WHERE $identifier = ? AND timestamp >= ? AND timestamp <= ? $groupBy ORDER BY timestamp DESC LIMIT ? OFFSET ?";
+            $stmt = $this->conn->prepare($query);
+            $stmt->bindValue(1, $val);
+            $stmt->bindValue(2, $startDate);
+            $stmt->bindValue(3, $endDate);
+            $stmt->bindValue(4, (int)$limit, PDO::PARAM_INT);
+            $stmt->bindValue(5, (int)$offset, PDO::PARAM_INT);
+        } else {
+            $query = "SELECT $select FROM consumption_logs WHERE $identifier = ? $groupBy ORDER BY timestamp DESC LIMIT ? OFFSET ?";
+            $stmt = $this->conn->prepare($query);
+            $stmt->bindValue(1, $val);
+            $stmt->bindValue(2, (int)$limit, PDO::PARAM_INT);
+            $stmt->bindValue(3, (int)$offset, PDO::PARAM_INT);
+        }
         $stmt->execute();
         
         return $stmt->fetchAll(PDO::FETCH_ASSOC);

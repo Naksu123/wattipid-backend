@@ -77,24 +77,77 @@ class DashboardService {
 
     public function getTotalConsumptionWeek($roomId, $userId, $role) {
         $id = $this->resolveIdentifier($roomId, $userId, $role);
+        
+        // Fetch active cycle start date
+        $stmt = $this->conn->prepare("SELECT cycle_start FROM billing_cycles WHERE room_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1");
+        $stmt->execute([$id['value']]);
+        $activeCycleStart = $stmt->fetchColumn();
+
         $dayOfWeek = date('w');
         $offset = ($dayOfWeek == 0 ? 6 : $dayOfWeek - 1);
-        $start = date('Y-m-d 00:00:00', strtotime("-$offset days"));
-        $end = date('Y-m-d 00:00:00', strtotime('+1 day')); // Up to right now essentially
+        $calendarStart = date('Y-m-d 00:00:00', strtotime("-$offset days"));
+        
+        // Ensure week start does not leak into previous cycle
+        $start = ($activeCycleStart && $activeCycleStart > $calendarStart) ? $activeCycleStart : $calendarStart;
+        $end = date('Y-m-d 00:00:00', strtotime('+1 day'));
+        
         return ['success' => true, 'data' => $this->dashboardRepo->getTotalConsumption($id['column'], $id['value'], $start, $end)];
     }
 
     public function getTotalConsumptionMonth($roomId, $userId, $role) {
         $id = $this->resolveIdentifier($roomId, $userId, $role);
-        $start = date('Y-m-01 00:00:00');
-        $end = date('Y-m-d 00:00:00', strtotime('first day of next month'));
-        return ['success' => true, 'data' => $this->dashboardRepo->getTotalConsumption($id['column'], $id['value'], $start, $end)];
+        
+        require_once __DIR__ . '/BillingCycleService.php';
+        $billingService = new BillingCycleService($this->conn);
+        $billingService->advanceCycleIfNeeded($id['value']);
+        
+        $stmt = $this->conn->prepare("SELECT cycle_start, cycle_end FROM billing_cycles WHERE room_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1");
+        $stmt->execute([$id['value']]);
+        $activeCycle = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$activeCycle) {
+            return ['success' => false, 'message' => 'No active billing cycle found.'];
+        }
+
+        $data = $this->dashboardRepo->getTotalConsumption($id['column'], $id['value'], $activeCycle['cycle_start'], $activeCycle['cycle_end']);
+        $data['cycle_start'] = $activeCycle['cycle_start'];
+        $data['cycle_end'] = $activeCycle['cycle_end'];
+        $data['next_reset'] = date('Y-m-d H:i:s', strtotime($activeCycle['cycle_end'] . ' + 1 second'));
+        
+        // Also fetch move_in_date for the UI
+        $stmtMoveIn = $this->conn->prepare("SELECT tenant_start_date FROM rooms WHERE room_id = ?");
+        $stmtMoveIn->execute([$id['value']]);
+        $data['tenant_start_date'] = $stmtMoveIn->fetchColumn();
+
+        return ['success' => true, 'data' => $data];
+    }
+
+    private function getCycleBoundsForMonth($roomId, $year, $month) {
+        $stmt = $this->conn->prepare("SELECT cycle_start, cycle_end FROM billing_cycles WHERE room_id = ? AND YEAR(cycle_start) = ? AND MONTH(cycle_start) = ? ORDER BY id DESC LIMIT 1");
+        $stmt->execute([$roomId, $year, $month]);
+        $cycle = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if ($cycle) {
+            return [$cycle['cycle_start'], $cycle['cycle_end']];
+        }
+
+        // Fallback calculation for cycles that haven't been created yet or legacy
+        $stmtMoveIn = $this->conn->prepare("SELECT tenant_start_date FROM rooms WHERE room_id = ?");
+        $stmtMoveIn->execute([$roomId]);
+        $moveInDate = $stmtMoveIn->fetchColumn();
+        
+        $startDay = $moveInDate ? sprintf('%02d', (int)date('d', strtotime($moveInDate))) : '01';
+        $reqDate = sprintf('%04d-%02d-%s 00:00:00', $year, $month, $startDay);
+        
+        $start = date('Y-m-d 00:00:00', strtotime("-1 month", strtotime($reqDate)));
+        $end = date('Y-m-d 00:00:00', strtotime($reqDate));
+        
+        return [$start, $end];
     }
 
     public function getMonthlyConsumptionFiltered($roomId, $userId, $role, $year, $month) {
         $id = $this->resolveIdentifier($roomId, $userId, $role);
-        $start = sprintf('%04d-%02d-01 00:00:00', $year, $month);
-        $end = date('Y-m-d 00:00:00', strtotime('+1 month', strtotime($start)));
+        list($start, $end) = $this->getCycleBoundsForMonth($id['value'], $year, $month);
         return ['success' => true, 'data' => $this->dashboardRepo->getTotalConsumption($id['column'], $id['value'], $start, $end)];
     }
 
@@ -105,10 +158,26 @@ class DashboardService {
         return ['success' => true, 'data' => $this->dashboardRepo->getHourlyBreakdown($id['column'], $id['value'], $start, $end)];
     }
 
+    public function getWeeklyBreakdown($roomId, $userId, $role) {
+        $id = $this->resolveIdentifier($roomId, $userId, $role);
+        
+        $stmt = $this->conn->prepare("SELECT cycle_start FROM billing_cycles WHERE room_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1");
+        $stmt->execute([$id['value']]);
+        $activeCycleStart = $stmt->fetchColumn();
+
+        $dayOfWeek = date('w');
+        $offset = ($dayOfWeek == 0 ? 6 : $dayOfWeek - 1);
+        $calendarStart = date('Y-m-d 00:00:00', strtotime("-$offset days"));
+        
+        $start = ($activeCycleStart && $activeCycleStart > $calendarStart) ? $activeCycleStart : $calendarStart;
+        $end = date('Y-m-d 00:00:00', strtotime('+1 day'));
+        
+        return ['success' => true, 'data' => $this->dashboardRepo->getDailyBreakdown($id['column'], $id['value'], $start, $end)];
+    }
+
     public function getDailyBreakdownFiltered($roomId, $userId, $role, $year, $month) {
         $id = $this->resolveIdentifier($roomId, $userId, $role);
-        $start = sprintf('%04d-%02d-01 00:00:00', $year, $month);
-        $end = date('Y-m-d 00:00:00', strtotime('+1 month', strtotime($start)));
+        list($start, $end) = $this->getCycleBoundsForMonth($id['value'], $year, $month);
         return ['success' => true, 'data' => $this->dashboardRepo->getDailyBreakdown($id['column'], $id['value'], $start, $end)];
     }
 
@@ -124,19 +193,34 @@ class DashboardService {
             $currStart = date('Y-m-d 00:00:00');
             $currEnd = date('Y-m-d H:i:s');
             $prevStart = date('Y-m-d 00:00:00', strtotime('-1 day'));
-            $prevEnd = date('Y-m-d H:i:s', strtotime('-1 day'));
+            $prevEnd = date('Y-m-d 23:59:59', strtotime('-1 day'));
         } elseif ($period === 'weekly') {
+            $stmt = $this->conn->prepare("SELECT cycle_start FROM billing_cycles WHERE room_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1");
+            $stmt->execute([$id['value']]);
+            $activeCycleStart = $stmt->fetchColumn();
+
             $dayOfWeek = date('w');
             $offset = ($dayOfWeek == 0 ? 6 : $dayOfWeek - 1);
-            $currStart = date('Y-m-d 00:00:00', strtotime("-$offset days"));
+            $calendarStart = date('Y-m-d 00:00:00', strtotime("-$offset days"));
+            
+            $currStart = ($activeCycleStart && $activeCycleStart > $calendarStart) ? $activeCycleStart : $calendarStart;
             $currEnd = date('Y-m-d H:i:s');
-            $prevStart = date('Y-m-d 00:00:00', strtotime("-".($offset + 7)." days"));
-            $prevEnd = date('Y-m-d H:i:s', strtotime("-7 days"));
+            
+            // Full previous week (Previous Monday 00:00:00 to Previous Sunday 23:59:59)
+            $prevStart = date('Y-m-d 00:00:00', strtotime("-$offset days -7 days"));
+            $prevEnd = date('Y-m-d 23:59:59', strtotime("-$offset days -1 day"));
         } else {
-            $currStart = date('Y-m-01 00:00:00');
-            $currEnd = date('Y-m-d H:i:s');
-            $prevStart = date('Y-m-01 00:00:00', strtotime('-1 month'));
-            $prevEnd = date('Y-m-d H:i:s', strtotime('-1 month'));
+            $year = (int)date('Y');
+            $month = (int)date('n');
+            list($currStart, $currEnd) = $this->getCycleBoundsForMonth($id['value'], $year, $month);
+            
+            $prevMonth = $month - 1;
+            $prevYear = $year;
+            if ($prevMonth == 0) {
+                $prevMonth = 12;
+                $prevYear--;
+            }
+            list($prevStart, $prevEnd) = $this->getCycleBoundsForMonth($id['value'], $prevYear, $prevMonth);
         }
 
         $currData = $this->dashboardRepo->getTotalConsumption($col, $val, $currStart, $currEnd);
@@ -161,13 +245,13 @@ class DashboardService {
         ];
     }
 
-    public function getTransactionHistory($roomId, $userId, $role, $limit, $offset, $filter = 'minute', $dateString = null) {
+    public function getTransactionHistory($roomId, $userId, $role, $limit, $offset, $filter = 'minute', $startDate = null, $endDate = null) {
         $id = $this->resolveIdentifier($roomId, $userId, $role);
         
         $grouped = [];
 
         if ($filter === 'minute') {
-            $rawLogs = $this->dashboardRepo->getTransactionHistory($id['column'], $id['value'], $limit, $offset, $dateString);
+            $rawLogs = $this->dashboardRepo->getTransactionHistory($id['column'], $id['value'], $limit, $offset, $startDate, $endDate);
             foreach ($rawLogs as $log) {
                 $dateTitle = date('F j, Y', strtotime($log['timestamp']));
                 $log['cost'] = abs((float)$log['cost']); // Fix negative bug
@@ -178,7 +262,7 @@ class DashboardService {
                 $grouped[$dateTitle][] = $log;
             }
         } else {
-            $rawLogs = $this->dashboardRepo->getGroupedHistory($id['column'], $id['value'], $filter, $limit, $offset);
+            $rawLogs = $this->dashboardRepo->getGroupedHistory($id['column'], $id['value'], $filter, $limit, $offset, $startDate, $endDate);
             foreach ($rawLogs as $log) {
                 $log['cost'] = abs((float)$log['totalCost']);
                 $log['energy'] = (float)$log['totalEnergy'];
@@ -211,5 +295,15 @@ class DashboardService {
         }
 
         return ['success' => true, 'data' => $formattedResponse];
+    }
+
+    public function getAvailableBillingCycles($roomId, $userId, $role) {
+        $id = $this->resolveIdentifier($roomId, $userId, $role);
+        
+        $stmt = $this->conn->prepare("SELECT id, cycle_start, cycle_end, total_kwh, total_cost, status FROM billing_cycles WHERE room_id = ? ORDER BY cycle_start DESC LIMIT 24");
+        $stmt->execute([$id['value']]);
+        $cycles = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        return ['success' => true, 'data' => $cycles];
     }
 }

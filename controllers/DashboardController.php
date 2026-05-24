@@ -64,6 +64,12 @@ class DashboardController {
         ResponseHelper::sendRaw($result);
     }
 
+    public function getWeeklyBreakdown($user, $data) {
+        $roomId = $this->validateRoomAccess($data, $user);
+        $result = $this->dashboardService->getWeeklyBreakdown($roomId, $user['id'], $user['role']);
+        ResponseHelper::sendRaw($result);
+    }
+
     public function getDailyBreakdownFiltered($user, $data) {
         $roomId = $this->validateRoomAccess($data, $user);
         if (!isset($data['year']) || !isset($data['month'])) {
@@ -88,8 +94,15 @@ class DashboardController {
             $data['limit'] ?? 50, 
             $data['offset'] ?? 0,
             $data['filter'] ?? 'minute',
-            $data['date'] ?? null
+            $data['startDate'] ?? null,
+            $data['endDate'] ?? null
         );
+        ResponseHelper::sendRaw($result);
+    }
+
+    public function getAvailableBillingCycles($user, $data) {
+        $roomId = $this->validateRoomAccess($data, $user);
+        $result = $this->dashboardService->getAvailableBillingCycles($roomId, $user['id'], $user['role']);
         ResponseHelper::sendRaw($result);
     }
 }

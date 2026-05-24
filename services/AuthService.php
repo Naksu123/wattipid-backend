@@ -204,9 +204,6 @@ class AuthService {
                     'message' => 'Registered successfully',
                     'needsVerification' => true
                 ];
-                if (isset($emailResult['mockCode'])) {
-                    $response['mockCode'] = $emailResult['mockCode'];
-                }
                 return $response;
             } else {
                 return [
@@ -320,9 +317,6 @@ class AuthService {
 
         if ($emailResult['success']) {
             $responseData = ['emailSent' => true];
-            if (EMAIL_PROVIDER === 'mock') {
-                $responseData['mockCode'] = $otp;
-            }
             return ['success' => true, 'message' => 'Verification code sent to your email.', 'data' => $responseData];
         } else {
             return ['success' => false, 'message' => 'Failed to send verification email.', 'data' => ['error' => $emailResult['message']]];
