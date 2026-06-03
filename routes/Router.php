@@ -143,6 +143,18 @@ class Router {
             case 'getAllRooms':
                 $this->roomController->getAllRooms($authenticatedUser);
                 return true;
+            case 'addRoom':
+                $this->roomController->addRoom($authenticatedUser, $data);
+                return true;
+            case 'updateRoom':
+                $this->roomController->updateRoom($authenticatedUser, $data);
+                return true;
+            case 'archiveRoom':
+                $this->roomController->archiveRoom($authenticatedUser, $data);
+                return true;
+            case 'restoreRoom':
+                $this->roomController->restoreRoom($authenticatedUser, $data);
+                return true;
             case 'getUserRooms':
                 $this->roomController->getUserRooms($authenticatedUser, $data);
                 return true;

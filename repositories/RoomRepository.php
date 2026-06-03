@@ -47,6 +47,10 @@ class RoomRepository {
             COUNT(*) as totalRooms,
             COALESCE(SUM(CASE WHEN status = 'occupied' THEN 1 ELSE 0 END), 0) as occupiedRooms,
             COALESCE(SUM(CASE WHEN status = 'on_process' THEN 1 ELSE 0 END), 0) as onProcessRooms,
+            COALESCE(SUM(CASE WHEN status = 'vacant' THEN 1 ELSE 0 END), 0) as vacantRooms,
+            COALESCE(SUM(CASE WHEN status = 'not_available' THEN 1 ELSE 0 END), 0) as notAvailableRooms,
+            COALESCE(SUM(CASE WHEN status = 'under_maintenance' THEN 1 ELSE 0 END), 0) as maintenanceRooms,
+            COALESCE(SUM(CASE WHEN status = 'archived' THEN 1 ELSE 0 END), 0) as archivedRooms,
             COALESCE(SUM(CASE WHEN last_seen < DATE_SUB(NOW(), INTERVAL 5 MINUTE) OR last_seen IS NULL THEN 1 ELSE 0 END), 0) as offlineMeters
             FROM rooms");
         return $stmt->fetch(PDO::FETCH_ASSOC);
@@ -107,6 +111,43 @@ class RoomRepository {
 
     public function updateLastSeen($roomId) {
         $stmt = $this->conn->prepare("UPDATE rooms SET last_seen = NOW() WHERE room_id = ?");
+        return $stmt->execute([$roomId]);
+    }
+
+    public function createRoom($data) {
+        $stmt = $this->conn->prepare("
+            INSERT INTO rooms (room_id, room_type, max_occupancy, status)
+            VALUES (?, ?, ?, ?)
+        ");
+        return $stmt->execute([
+            $data['room_id'],
+            !empty($data['room_type']) ? $data['room_type'] : 'Standard',
+            isset($data['max_occupancy']) && $data['max_occupancy'] !== '' ? $data['max_occupancy'] : 1,
+            !empty($data['status']) ? $data['status'] : 'vacant'
+        ]);
+    }
+
+    public function updateRoom($roomId, $data) {
+        $stmt = $this->conn->prepare("
+            UPDATE rooms 
+            SET room_type = ?, max_occupancy = ?, status = ?
+            WHERE room_id = ?
+        ");
+        return $stmt->execute([
+            !empty($data['room_type']) ? $data['room_type'] : 'Standard',
+            isset($data['max_occupancy']) && $data['max_occupancy'] !== '' ? $data['max_occupancy'] : 1,
+            !empty($data['status']) ? $data['status'] : 'vacant',
+            $roomId
+        ]);
+    }
+
+    public function archiveRoom($roomId, $userId) {
+        $stmt = $this->conn->prepare("UPDATE rooms SET status = 'archived' WHERE room_id = ?");
+        return $stmt->execute([$roomId]);
+    }
+
+    public function restoreRoom($roomId) {
+        $stmt = $this->conn->prepare("UPDATE rooms SET status = 'vacant' WHERE room_id = ?");
         return $stmt->execute([$roomId]);
     }
 }

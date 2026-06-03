@@ -104,4 +104,45 @@ class RoomController {
         $result = $this->roomService->getTenantHistory($data['roomId'] ?? '');
         ResponseHelper::sendRaw($result);
     }
+
+    public function addRoom($authenticatedUser, $data) {
+        if ($authenticatedUser['role'] !== 'landlord') {
+            ResponseHelper::error("Forbidden", 403);
+        }
+        $result = $this->roomService->addRoom($data);
+        ResponseHelper::sendRaw($result);
+    }
+
+    public function updateRoom($authenticatedUser, $data) {
+        if ($authenticatedUser['role'] !== 'landlord') {
+            ResponseHelper::error("Forbidden", 403);
+        }
+        if (empty($data['room_id'])) {
+            ResponseHelper::error("Room ID is required", 400);
+        }
+        $result = $this->roomService->updateRoom($data['room_id'], $data);
+        ResponseHelper::sendRaw($result);
+    }
+
+    public function archiveRoom($authenticatedUser, $data) {
+        if ($authenticatedUser['role'] !== 'landlord') {
+            ResponseHelper::error("Forbidden", 403);
+        }
+        if (empty($data['room_id'])) {
+            ResponseHelper::error("Room ID is required", 400);
+        }
+        $result = $this->roomService->archiveRoom($data['room_id'], $authenticatedUser['id']);
+        ResponseHelper::sendRaw($result);
+    }
+
+    public function restoreRoom($authenticatedUser, $data) {
+        if ($authenticatedUser['role'] !== 'landlord') {
+            ResponseHelper::error("Forbidden", 403);
+        }
+        if (empty($data['room_id'])) {
+            ResponseHelper::error("Room ID is required", 400);
+        }
+        $result = $this->roomService->restoreRoom($data['room_id']);
+        ResponseHelper::sendRaw($result);
+    }
 }

@@ -325,6 +325,26 @@ class AuthService {
 
     public function verifyOTP($email, $code, $type = 'verification') {
         $result = validateOTP($this->conn, $email, $code, $type);
+        
+        if ($result['success'] && $type === 'verification') {
+            // 1. Mark the user as verified in the database
+            $this->userRepo->markEmailAsVerified($email);
+            
+            // 2. Automatically log the user in by generating tokens
+            $user = $this->userRepo->findByEmail($email);
+            if ($user) {
+                $token = $this->generateAccessToken($user);
+                $refreshToken = $this->generateAndStoreRefreshToken($user['id']);
+                
+                unset($user['password_hash']);
+                $result['data'] = [
+                    'user' => $user,
+                    'token' => $token,
+                    'refreshToken' => $refreshToken
+                ];
+            }
+        }
+        
         return $result;
     }
 }

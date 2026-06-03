@@ -18,6 +18,27 @@ class DashboardService {
         return ['column' => 'room_id', 'value' => $roomId];
     }
 
+    /**
+     * Fetch the current configured rate_per_kwh from settings.
+     * Falls back to 12.50 if not set.
+     */
+    private function getCurrentRate() {
+        $stmt = $this->conn->prepare("SELECT setting_value FROM settings WHERE setting_key = 'rate_per_kwh' LIMIT 1");
+        $stmt->execute();
+        $val = $stmt->fetchColumn();
+        return $val ? floatval($val) : 12.50;
+    }
+
+    /**
+     * Recalculate totalCost from totalEnergy × current rate
+     * so the dashboard always reflects the latest configured rate.
+     */
+    private function recalculateCost($data) {
+        $rate = $this->getCurrentRate();
+        $data['totalCost'] = round(floatval($data['totalEnergy'] ?? 0) * $rate, 2);
+        return $data;
+    }
+
     private function checkAndResetBillingCycle($user) {
         if ($user['role'] !== 'tenant') return $user;
         
@@ -72,7 +93,7 @@ class DashboardService {
         $id = $this->resolveIdentifier($roomId, $userId, $role);
         $start = date('Y-m-d 00:00:00');
         $end = date('Y-m-d 00:00:00', strtotime('+1 day'));
-        return ['success' => true, 'data' => $this->dashboardRepo->getTotalConsumption($id['column'], $id['value'], $start, $end)];
+        return ['success' => true, 'data' => $this->recalculateCost($this->dashboardRepo->getTotalConsumption($id['column'], $id['value'], $start, $end))];
     }
 
     public function getTotalConsumptionWeek($roomId, $userId, $role) {
@@ -91,7 +112,7 @@ class DashboardService {
         $start = ($activeCycleStart && $activeCycleStart > $calendarStart) ? $activeCycleStart : $calendarStart;
         $end = date('Y-m-d 00:00:00', strtotime('+1 day'));
         
-        return ['success' => true, 'data' => $this->dashboardRepo->getTotalConsumption($id['column'], $id['value'], $start, $end)];
+        return ['success' => true, 'data' => $this->recalculateCost($this->dashboardRepo->getTotalConsumption($id['column'], $id['value'], $start, $end))];
     }
 
     public function getTotalConsumptionMonth($roomId, $userId, $role) {
@@ -109,7 +130,7 @@ class DashboardService {
             return ['success' => false, 'message' => 'No active billing cycle found.'];
         }
 
-        $data = $this->dashboardRepo->getTotalConsumption($id['column'], $id['value'], $activeCycle['cycle_start'], $activeCycle['cycle_end']);
+        $data = $this->recalculateCost($this->dashboardRepo->getTotalConsumption($id['column'], $id['value'], $activeCycle['cycle_start'], $activeCycle['cycle_end']));
         $data['cycle_start'] = $activeCycle['cycle_start'];
         $data['cycle_end'] = $activeCycle['cycle_end'];
         $data['next_reset'] = date('Y-m-d H:i:s', strtotime($activeCycle['cycle_end'] . ' + 1 second'));

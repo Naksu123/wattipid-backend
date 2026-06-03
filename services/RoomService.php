@@ -173,9 +173,60 @@ class RoomService {
     }
 
     public function generateNewTenantCode($roomId) {
-        $newCode = strtoupper(substr(md5(uniqid(mt_rand(), true)), 0, 8));
+        $room = $this->roomRepo->findById($roomId);
+        if (!$room) return ['success' => false, 'message' => 'Room not found'];
+
+        $newCode = 'TC-' . strtoupper(substr(md5(uniqid(rand(), true)), 0, 6));
         $this->roomRepo->updateTenantCode($roomId, $newCode);
-        return ['success' => true, 'data' => $newCode];
+        return ['success' => true, 'message' => 'New code generated', 'code' => $newCode];
+    }
+
+    public function addRoom($data) {
+        if (empty($data['room_id'])) {
+            return ['success' => false, 'message' => 'Room number/ID is required.'];
+        }
+        
+        $existing = $this->roomRepo->findById($data['room_id']);
+        if ($existing) {
+            return ['success' => false, 'message' => 'Room number already exists.'];
+        }
+
+        $this->roomRepo->createRoom($data);
+        return ['success' => true, 'message' => 'Room added successfully.'];
+    }
+
+    public function updateRoom($roomId, $data) {
+        $existing = $this->roomRepo->findById($roomId);
+        if (!$existing) {
+            return ['success' => false, 'message' => 'Room not found.'];
+        }
+
+        $this->roomRepo->updateRoom($roomId, $data);
+        return ['success' => true, 'message' => 'Room updated successfully.'];
+    }
+
+    public function archiveRoom($roomId, $userId) {
+        $room = $this->roomRepo->findById($roomId);
+        if (!$room) {
+            return ['success' => false, 'message' => 'Room not found.'];
+        }
+
+        if ($room['status'] === 'occupied' || !empty($room['tenant_name'])) {
+            return ['success' => false, 'message' => 'Cannot archive a room with an active tenant.'];
+        }
+
+        $this->roomRepo->archiveRoom($roomId, $userId);
+        return ['success' => true, 'message' => 'Room archived successfully.'];
+    }
+
+    public function restoreRoom($roomId) {
+        $room = $this->roomRepo->findById($roomId);
+        if (!$room) {
+            return ['success' => false, 'message' => 'Room not found.'];
+        }
+
+        $this->roomRepo->restoreRoom($roomId);
+        return ['success' => true, 'message' => 'Room restored successfully.'];
     }
 
     public function saveTenantInvitation($email, $roomId, $tenantCode) {

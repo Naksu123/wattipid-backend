@@ -186,9 +186,11 @@ class IoTService {
         $alerts = [];
 
         // GHOST FIX: Adjusted spike logic for demonstration purposes
-        // Triggers instantly when a 300W+ appliance is plugged in, bypassing strict trend requirements
-        if ($power >= 300 && $power >= ($avgPower * 1.5)) {
-            $alerts[] = ['type' => 'alert', 'title' => '⚡ TipsEngine: Electricity Spike', 'message' => "Power spike detected: " . number_format($power, 0) . "W usage."];
+        // Triggers instantly when high wattage is detected, bypassing strict trend requirements
+        if ($power >= 1200) {
+            $alerts[] = ['type' => 'danger', 'title' => '🚨 Critical Power Usage!', 'message' => "Extremely high power detected: " . number_format($power, 0) . "W usage. Unplug high-wattage appliances."];
+        } else if ($power >= 700) {
+            $alerts[] = ['type' => 'warning', 'title' => '⚠️ High Consumption Alert', 'message' => "Power spike detected: " . number_format($power, 0) . "W usage. Consider turning off unused devices."];
         }
 
         // GHOST FIX: Only trigger budget alerts when there is REAL spending (totalDaily > 0)
@@ -210,9 +212,9 @@ class IoTService {
             else if ($pct >= 85) $alerts[] = ['type' => 'warning', 'title' => '⚠️ TipsEngine: Monthly Budget Warning', 'message' => "You've used " . number_format($pct, 0) . "% of your monthly budget."];
         }
 
-        // 3. Dispatch Alerts — with cooldown check
+        // 3. Dispatch Alerts — with cooldown check (reduced to 1 min for demo testing)
         foreach ($alerts as $alert) {
-            if (!$this->notifRepo->hasRecentAlert($roomId, $alert['title'], 30)) {
+            if (!$this->notifRepo->hasRecentAlert($roomId, $alert['title'], 1)) {
                 $this->notifRepo->insertNotification($roomId, $userId, $alert['type'], $alert['title'], $alert['message']);
             }
         }
