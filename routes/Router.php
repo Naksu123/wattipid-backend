@@ -8,6 +8,7 @@ require_once __DIR__ . '/../controllers/NotificationController.php';
 require_once __DIR__ . '/../controllers/SettingController.php';
 require_once __DIR__ . '/../controllers/UserController.php';
 require_once __DIR__ . '/../controllers/ForecastController.php';
+require_once __DIR__ . '/../controllers/PaymentController.php';
 require_once __DIR__ . '/../middlewares/IoTMiddleware.php';
 
 class Router {
@@ -20,6 +21,7 @@ class Router {
     private $settingController;
     private $userController;
     private $forecastController;
+    private $paymentController;
     private $iotMiddleware;
 
     public function __construct($dbConnection) {
@@ -32,6 +34,7 @@ class Router {
         $this->settingController = new SettingController($dbConnection);
         $this->userController = new UserController($dbConnection);
         $this->forecastController = new ForecastController($dbConnection);
+        $this->paymentController = new PaymentController($dbConnection);
         $this->iotMiddleware = new IoTMiddleware($dbConnection);
     }
 
@@ -91,6 +94,10 @@ class Router {
 
             case 'resetPassword':
                 $this->authController->resetPassword($data);
+                return true;
+
+            case 'getLiveOverview':
+                $this->dashboardController->getLiveOverview($authenticatedUser, $data);
                 return true;
 
             case 'getBillingCycle':
@@ -282,6 +289,27 @@ class Router {
                 return true;
             case 'getPeakHourPrediction':
                 $this->forecastController->getPeakHourPrediction($data);
+                return true;
+
+            // PAYMENTS
+            case 'submitPayment':
+                $this->paymentController->submitPayment($authenticatedUser, $data);
+                return true;
+            case 'submitOfflinePayment':
+                $this->paymentController->submitOfflinePayment($authenticatedUser, $data);
+                return true;
+            case 'verifyPayment':
+                $this->paymentController->verifyPayment($authenticatedUser, $data);
+                return true;
+            case 'getPaymentHistory':
+                $this->paymentController->getPaymentHistory($authenticatedUser, $data);
+                return true;
+            case 'getPaymentWidgets':
+                $this->paymentController->getPaymentWidgets($authenticatedUser, $data);
+                return true;
+            case 'processPenalties':
+                // In production, secure this by checking for a specific cron secret or internal IP
+                $this->paymentController->processPenalties($data);
                 return true;
 
             default:

@@ -1,12 +1,20 @@
 <?php
 require_once __DIR__ . '/../services/DashboardService.php';
+require_once __DIR__ . '/../services/DashboardSyncService.php';
 require_once __DIR__ . '/../helpers/ResponseHelper.php';
 
 class DashboardController {
     private $dashboardService;
+    private $syncService;
 
     public function __construct($dbConnection) {
         $this->dashboardService = new DashboardService($dbConnection);
+        $this->syncService = new DashboardSyncService($dbConnection);
+    }
+
+    public function getLiveOverview($user, $data) {
+        $result = $this->syncService->getLiveOverview($user['id'], $user['role']);
+        ResponseHelper::sendRaw($result);
     }
 
     private function validateRoomAccess($data, $user) {
