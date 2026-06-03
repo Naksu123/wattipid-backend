@@ -49,7 +49,7 @@ class BillingCycleService {
             $finalKwh = $totals['e'] ?? 0;
             $finalCost = $totals['c'] ?? 0;
 
-            $update = $this->db->prepare("UPDATE billing_cycles SET status = 'completed', total_kwh = ?, total_cost = ? WHERE id = ?");
+            $update = $this->db->prepare("UPDATE billing_cycles SET status = 'completed', total_kwh = ?, total_cost = ?, due_date = DATE_ADD(NOW(), INTERVAL 7 DAY) WHERE id = ?");
             $update->execute([$finalKwh, $finalCost, $activeCycle['id']]);
 
             // 3. Create the next cycle based on the exact start day of the previous cycle
@@ -60,8 +60,8 @@ class BillingCycleService {
             // Edge case: what if the system was offline for 3 months? Fast-forward until the end date is > now.
             while ($nextCycleEnd < $now) {
                 // Insert empty completed cycles to preserve history continuity
-                $insert = $this->db->prepare("INSERT INTO billing_cycles (room_id, tenant_name, cycle_start, cycle_end, total_kwh, total_cost, status) VALUES (?, ?, ?, ?, 0, 0, 'completed')");
-                $insert->execute([$roomId, $activeCycle['tenant_name'], $nextCycleStart, $nextCycleEnd]);
+                $insert = $this->db->prepare("INSERT INTO billing_cycles (room_id, tenant_name, cycle_start, cycle_end, total_kwh, total_cost, status, due_date) VALUES (?, ?, ?, ?, 0, 0, 'completed', DATE_ADD(?, INTERVAL 7 DAY))");
+                $insert->execute([$roomId, $activeCycle['tenant_name'], $nextCycleStart, $nextCycleEnd, $nextCycleEnd]);
                 
                 $nextCycleStart = $this->getSafeNextMonth($nextCycleStart);
                 $nextCycleEnd = date('Y-m-d 23:59:59', strtotime($this->getSafeNextMonth($nextCycleStart) . ' -1 day'));

@@ -12,7 +12,8 @@
 ob_start();
 
 // 2. Production Error Reporting (Log to file, hide from client)
-define('DEBUG_MODE', true); // SET TO FALSE IN PRODUCTION
+require_once __DIR__ . '/config/config.php';
+define('DEBUG_MODE', ENVIRONMENT === 'development');
 ini_set('display_errors', DEBUG_MODE ? 1 : 0);
 ini_set('log_errors', 1);
 error_reporting(E_ALL);
@@ -64,7 +65,18 @@ try {
     // Process Request
     $json = file_get_contents('php://input');
     $data = json_decode($json, true) ?? [];
+    
+    // Phase 6: Security Hardening (Rate Limiting & Sanitization)
+    require_once __DIR__ . '/utils/SecurityMiddleware.php';
     $action = $data['action'] ?? $_GET['action'] ?? '';
+    
+    // Apply Rate Limiting
+    if (!empty($action)) {
+        SecurityMiddleware::checkRateLimit($action);
+    }
+    
+    // Deep Sanitize JSON Payload
+    $data = SecurityMiddleware::sanitizeInput($data);
 
     // Auth Middleware (Only enforce if not a public action)
     $publicActions = ['login', 'register', 'verifyOTP', 'refreshToken', 'requestPasswordReset', 'verifyResetOTP', 'resetPassword', 'sendVerificationCode', 'resendVerificationCode', 'getTenantInvitationByEmail', 'logConsumption', 'getLatestConsumption'];
@@ -75,6 +87,15 @@ try {
     
     if (!in_array($action, $publicActions)) {
         $authenticatedUser = $auth->handle();
+    }
+
+    // Lazy Evaluation: Calculate daily penalties if they haven't been calculated today.
+    // We only trigger this for authenticated landlord routes to avoid slowing down public/IoT APIs
+    if ($authenticatedUser && $authenticatedUser['role'] === 'landlord') {
+        require_once __DIR__ . '/services/PenaltyService.php';
+        $penaltySvc = new PenaltyService($conn);
+        // calculateDailyPenalties() has a built-in cache check so it only runs once per day
+        $penaltySvc->calculateDailyPenalties();
     }
 
     // Route Request

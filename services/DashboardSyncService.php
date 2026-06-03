@@ -45,11 +45,11 @@ class DashboardSyncService {
         $activeStmt = $this->conn->query($activeQ);
         $activeRooms = $activeStmt->fetch(PDO::FETCH_ASSOC)['active'];
 
-        // Revenue — from billing_cycles (actual billed amounts)
+        // Revenue — strictly calculated from COMPLETED billing cycles (Actual generated bills)
         $revQ = "SELECT 
-            COALESCE(SUM(CASE WHEN status = 'completed' THEN total_cost ELSE 0 END), 0) as collected,
-            COALESCE(SUM(CASE WHEN status = 'active' THEN total_cost ELSE 0 END), 0) as outstanding,
-            COALESCE(SUM(total_cost), 0) as totalBilled
+            COALESCE(SUM(CASE WHEN payment_status = 'paid' THEN (total_cost + penalty_amount) ELSE 0 END), 0) as collected,
+            COALESCE(SUM(CASE WHEN payment_status IN ('unpaid', 'overdue') AND status = 'completed' THEN (total_cost + penalty_amount) ELSE 0 END), 0) as outstanding,
+            COALESCE(SUM(CASE WHEN status = 'completed' THEN (total_cost + penalty_amount) ELSE 0 END), 0) as totalBilled
             FROM billing_cycles";
         $revStmt = $this->conn->query($revQ);
         $rev = $revStmt->fetch(PDO::FETCH_ASSOC);
@@ -102,12 +102,12 @@ class DashboardSyncService {
         // Use billing_cycles as the source of truth for payment status
         $q = "SELECT 
             COUNT(*) as total,
-            COALESCE(SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END), 0) as pending,
-            COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) as verified,
-            COALESCE(SUM(total_cost), 0) as totalAmount,
-            COALESCE(SUM(CASE WHEN status = 'completed' THEN total_cost ELSE 0 END), 0) as collectedAmount,
-            COALESCE(SUM(CASE WHEN status = 'active' THEN total_cost ELSE 0 END), 0) as outstandingAmount
-            FROM billing_cycles";
+            COALESCE(SUM(CASE WHEN payment_status = 'unpaid' OR payment_status = 'overdue' THEN 1 ELSE 0 END), 0) as pending,
+            COALESCE(SUM(CASE WHEN payment_status = 'paid' THEN 1 ELSE 0 END), 0) as verified,
+            COALESCE(SUM(total_cost + COALESCE(penalty_amount, 0)), 0) as totalAmount,
+            COALESCE(SUM(CASE WHEN payment_status = 'paid' THEN (total_cost + COALESCE(penalty_amount, 0)) ELSE 0 END), 0) as collectedAmount,
+            COALESCE(SUM(CASE WHEN payment_status = 'unpaid' OR payment_status = 'overdue' THEN (total_cost + COALESCE(penalty_amount, 0)) ELSE 0 END), 0) as outstandingAmount
+            FROM billing_cycles WHERE status = 'completed'";
         $stmt = $this->conn->query($q);
         $result = $stmt->fetch(PDO::FETCH_ASSOC);
         $result['rejected'] = 0; // No rejected concept in billing_cycles

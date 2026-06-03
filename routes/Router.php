@@ -9,6 +9,8 @@ require_once __DIR__ . '/../controllers/SettingController.php';
 require_once __DIR__ . '/../controllers/UserController.php';
 require_once __DIR__ . '/../controllers/ForecastController.php';
 require_once __DIR__ . '/../controllers/PaymentController.php';
+require_once __DIR__ . '/../controllers/PenaltyController.php';
+require_once __DIR__ . '/../controllers/AuditController.php';
 require_once __DIR__ . '/../middlewares/IoTMiddleware.php';
 
 class Router {
@@ -22,6 +24,8 @@ class Router {
     private $userController;
     private $forecastController;
     private $paymentController;
+    private $penaltyController;
+    private $auditController;
     private $iotMiddleware;
 
     public function __construct($dbConnection) {
@@ -35,6 +39,8 @@ class Router {
         $this->userController = new UserController($dbConnection);
         $this->forecastController = new ForecastController($dbConnection);
         $this->paymentController = new PaymentController($dbConnection);
+        $this->penaltyController = new PenaltyController($dbConnection);
+        $this->auditController = new AuditController($dbConnection);
         $this->iotMiddleware = new IoTMiddleware($dbConnection);
     }
 
@@ -198,6 +204,9 @@ class Router {
             case 'getTenantInvitationByEmail':
                 $this->roomController->getTenantInvitationByEmail($data);
                 return true;
+            case 'getSystemAuditLogs':
+                $this->auditController->getSystemAuditLogs($authenticatedUser);
+                return true;
 
             // BUDGET
             case 'getBudget':
@@ -312,8 +321,24 @@ class Router {
                 $this->paymentController->processPenalties($data);
                 return true;
 
+            case 'getPenaltySettings':
+                $this->penaltyController->getSettings($authenticatedUser);
+                return true;
+
+            case 'updatePenaltySettings':
+                $this->penaltyController->updateSettings($authenticatedUser, $data);
+                return true;
+
+            case 'getOverdueAccounts':
+                $this->penaltyController->getOverdueCenter($authenticatedUser);
+                return true;
+
+            case 'triggerPenaltyCalculation':
+                $this->penaltyController->triggerCalculation($authenticatedUser);
+                return true;
+
             default:
-                // Not refactored yet. Let the old giant switch statement handle it.
+                echo json_encode(["success" => false, "message" => "Unknown action", "action" => $action]);
                 return false;
         }
     }

@@ -30,6 +30,7 @@ function config($key, $default = null) {
 }
 
 // Common Constants
+if (!defined('ENVIRONMENT')) define('ENVIRONMENT', config('APP_ENV', 'development'));
 if (!defined('SECRET_KEY')) define('SECRET_KEY', config('SECRET_KEY', 'default_fallback_key_change_me'));
 if (!defined('BREVO_API_KEY')) define('BREVO_API_KEY', config('BREVO_API_KEY', ''));
 if (!defined('SENDER_EMAIL')) define('SENDER_EMAIL', config('SENDER_EMAIL', 'noreply@wattipid.com'));

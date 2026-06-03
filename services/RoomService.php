@@ -83,11 +83,11 @@ class RoomService {
             $nextMonth = date('Y-m-d', strtotime('+1 month'));
 
             // 1. Close any active billing cycle in the OLD room
-            $stmt = $this->conn->prepare("UPDATE billing_cycles SET status = 'completed', cycle_end = NOW() WHERE room_id = ? AND status = 'active'");
+            $stmt = $this->conn->prepare("UPDATE billing_cycles SET status = 'completed', cycle_end = NOW(), due_date = DATE_ADD(NOW(), INTERVAL 7 DAY) WHERE room_id = ? AND status = 'active'");
             $stmt->execute([$fromRoomId]);
 
             // 2. Close any lingering active billing cycle in the NEW room
-            $stmt = $this->conn->prepare("UPDATE billing_cycles SET status = 'completed', cycle_end = NOW() WHERE room_id = ? AND status = 'active'");
+            $stmt = $this->conn->prepare("UPDATE billing_cycles SET status = 'completed', cycle_end = NOW(), due_date = DATE_ADD(NOW(), INTERVAL 7 DAY) WHERE room_id = ? AND status = 'active'");
             $stmt->execute([$toRoomId]);
 
             // 3. Create a BRAND NEW billing cycle for the tenant in the NEW room
