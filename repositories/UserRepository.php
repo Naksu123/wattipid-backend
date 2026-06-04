@@ -1,6 +1,6 @@
 <?php
 class UserRepository {
-    private $conn;
+    public $conn;
 
     public function __construct($dbConnection) {
         $this->conn = $dbConnection;

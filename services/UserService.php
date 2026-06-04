@@ -23,7 +23,15 @@ class UserService {
     }
 
     public function updatePushToken($userId, $token) {
-        $this->userRepo->updatePushToken($userId, $token);
+        $stmt = $this->userRepo->conn->prepare("
+            INSERT INTO device_tokens (user_id, expo_push_token, device_name, platform, is_active, last_active)
+            VALUES (?, ?, 'React Native App', 'cross-platform', 1, NOW())
+            ON DUPLICATE KEY UPDATE 
+                expo_push_token = VALUES(expo_push_token),
+                is_active = 1,
+                last_active = NOW()
+        ");
+        $stmt->execute([$userId, $token]);
         return ['success' => true];
     }
 }

@@ -16,11 +16,18 @@ class PaymentController {
         $billingCycleId = $data['billingCycleId'] ?? null;
         $roomId = $data['roomId'] ?? null;
         $amount = $data['amount'] ?? 0;
-        $proofUrl = $data['proofUrl'] ?? null; // In a real system, handle multipart file upload. For now, we accept a URL or base64.
+        $proofUrl = $data['proofUrl'] ?? null; // Optional for Cash
         $referenceNumber = $data['referenceNumber'] ?? null;
+        $paymentMethod = $data['paymentMethod'] ?? 'Cash';
+        $paymentDate = $data['paymentDate'] ?? date('Y-m-d H:i:s');
 
-        if (!$billingCycleId || !$roomId || $amount <= 0 || !$proofUrl) {
+        if (!$billingCycleId || !$roomId || $amount <= 0) {
             echo json_encode(["success" => false, "message" => "Missing required payment fields"]);
+            return;
+        }
+
+        if (in_array(strtolower($paymentMethod), ['gcash', 'maya']) && empty($proofUrl)) {
+            echo json_encode(["success" => false, "message" => "Proof of payment is required for e-wallets"]);
             return;
         }
 
@@ -28,8 +35,8 @@ class PaymentController {
             $this->db->beginTransaction();
 
             // Insert into payments
-            $stmt = $this->db->prepare("INSERT INTO payments (billing_cycle_id, room_id, tenant_id, amount, payment_method, reference_number, proof_url, status) VALUES (?, ?, ?, ?, 'online', ?, ?, 'pending')");
-            $stmt->execute([$billingCycleId, $roomId, $authenticatedUser['id'], $amount, $referenceNumber, $proofUrl]);
+            $stmt = $this->db->prepare("INSERT INTO payments (billing_cycle_id, room_id, tenant_id, amount, payment_method, payment_date, reference_number, proof_url, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')");
+            $stmt->execute([$billingCycleId, $roomId, $authenticatedUser['id'], $amount, $paymentMethod, $paymentDate, $referenceNumber, $proofUrl]);
             $paymentId = $this->db->lastInsertId();
 
             // Update billing_cycles
@@ -80,13 +87,38 @@ class PaymentController {
             }
 
             if ($actionType === 'approve') {
-                $stmt2 = $this->db->prepare("UPDATE payments SET status = 'verified', verified_by = ?, paid_at = NOW() WHERE id = ?");
-                $stmt2->execute([$authenticatedUser['id'], $paymentId]);
+                $actualAmount = isset($data['actual_amount']) ? (float)$data['actual_amount'] : (float)$payment['amount'];
 
-                $stmt3 = $this->db->prepare("UPDATE billing_cycles SET payment_status = 'paid' WHERE id = ?");
-                $stmt3->execute([$payment['billing_cycle_id']]);
+                $stmt2 = $this->db->prepare("UPDATE payments SET status = 'verified', amount = ?, verified_by = ?, paid_at = NOW() WHERE id = ?");
+                $stmt2->execute([$actualAmount, $authenticatedUser['id'], $paymentId]);
 
-                $this->logAudit($authenticatedUser['id'], 'landlord', 'approve_payment', 'payments', $paymentId, 'pending', 'verified');
+                // Calculate if this is a partial or full payment
+                $stmt_bc = $this->db->prepare("SELECT * FROM billing_cycles WHERE id = ? FOR UPDATE");
+                $stmt_bc->execute([$payment['billing_cycle_id']]);
+                $bc = $stmt_bc->fetch(PDO::FETCH_ASSOC);
+
+                $newAmountPaid = (float)$bc['amount_paid'] + $actualAmount;
+                
+                $grandTotal = (float)$bc['grand_total'];
+                if ($grandTotal == 0) {
+                     $grandTotal = (float)$bc['electricity_charge'] + (float)$bc['penalty_amount'] + (float)$bc['monthly_rent'] + (float)$bc['previous_balance'] + (float)$bc['additional_charges'] - (float)$bc['discounts'];
+                }
+                if ($grandTotal == 0) {
+                     $grandTotal = (float)$bc['total_cost'] + (float)$bc['penalty_amount'];
+                }
+
+                $newStatus = ($newAmountPaid >= $grandTotal - 0.01) ? 'paid' : 'partially_paid'; // 0.01 margin for float errors
+
+                $stmt3 = $this->db->prepare("UPDATE billing_cycles SET payment_status = ?, amount_paid = ? WHERE id = ?");
+                $stmt3->execute([$newStatus, $newAmountPaid, $payment['billing_cycle_id']]);
+
+                $this->logAudit($authenticatedUser['id'], 'landlord', 'approve_payment', 'payments', $paymentId, 'pending', "verified (amount: $actualAmount, status: $newStatus)");
+
+                // Send Real-time Notification
+                require_once __DIR__ . '/../services/BillingNotificationService.php';
+                $notifSvc = new BillingNotificationService($this->db);
+                $remainingBalance = max($grandTotal - $newAmountPaid, 0);
+                $notifSvc->sendPaymentVerificationAlert($payment['room_id'], $payment['tenant_id'], $actualAmount, $newStatus, $payment['payment_method'], $remainingBalance);
             } else {
                 $stmt2 = $this->db->prepare("UPDATE payments SET status = 'rejected', verified_by = ?, rejection_reason = ? WHERE id = ?");
                 $stmt2->execute([$authenticatedUser['id'], $reason, $paymentId]);
@@ -319,7 +351,7 @@ class PaymentController {
         }
         
         // Fetch applied payments
-        $stmtPayments = $this->db->prepare("SELECT amount, status, created_at FROM payments WHERE billing_cycle_id = ? ORDER BY created_at DESC");
+        $stmtPayments = $this->db->prepare("SELECT amount, status, created_at, payment_method, paid_at, reference_number FROM payments WHERE billing_cycle_id = ? ORDER BY created_at DESC");
         $stmtPayments->execute([$billing['id']]);
         $payments = $stmtPayments->fetchAll(PDO::FETCH_ASSOC);
         
@@ -346,8 +378,17 @@ class PaymentController {
             return;
         }
 
-        // We only show completed cycles in billing history
-        $stmt = $this->db->prepare("SELECT * FROM billing_cycles WHERE room_id = ? AND status = 'completed' ORDER BY cycle_end DESC LIMIT ? OFFSET ?");
+        $query = "
+            SELECT bc.*,
+                   (SELECT payment_method FROM payments WHERE billing_cycle_id = bc.id ORDER BY id DESC LIMIT 1) as payment_method,
+                   (SELECT paid_at FROM payments WHERE billing_cycle_id = bc.id AND status = 'verified' ORDER BY id DESC LIMIT 1) as verification_date,
+                   (SELECT u.name FROM payments p JOIN users u ON p.verified_by = u.id WHERE p.billing_cycle_id = bc.id AND p.status = 'verified' ORDER BY p.id DESC LIMIT 1) as verified_by_name
+            FROM billing_cycles bc
+            WHERE bc.room_id = ? AND bc.status = 'completed'
+            ORDER BY bc.cycle_end DESC
+            LIMIT ? OFFSET ?
+        ";
+        $stmt = $this->db->prepare($query);
         $stmt->bindValue(1, $roomId);
         $stmt->bindValue(2, (int)$limit, PDO::PARAM_INT);
         $stmt->bindValue(3, (int)$offset, PDO::PARAM_INT);
@@ -355,5 +396,62 @@ class PaymentController {
         
         $history = $stmt->fetchAll(PDO::FETCH_ASSOC);
         echo json_encode(["success" => true, "data" => $history]);
+    }
+    public function getPaymentInsights($authenticatedUser, $data) {
+        if (!$authenticatedUser) {
+            echo json_encode(["success" => false, "message" => "Unauthorized"]);
+            return;
+        }
+
+        $roomId = $data['roomId'] ?? null;
+        if (!$roomId && $authenticatedUser['role'] === 'tenant') {
+            $roomId = $authenticatedUser['room_id'] ?? null;
+        }
+
+        if (!$roomId) {
+            echo json_encode(["success" => false, "message" => "Room ID required"]);
+            return;
+        }
+
+        try {
+            // Total Paid All-Time
+            $stmt = $this->db->prepare("SELECT SUM(amount) as total FROM payments WHERE room_id = ? AND status = 'verified'");
+            $stmt->execute([$roomId]);
+            $totalPaid = $stmt->fetchColumn() ?: 0;
+
+            // Total Paid This Year
+            $year = date('Y');
+            $stmtYear = $this->db->prepare("SELECT SUM(amount) as total FROM payments WHERE room_id = ? AND status = 'verified' AND YEAR(paid_at) = ?");
+            $stmtYear->execute([$roomId, $year]);
+            $totalPaidThisYear = $stmtYear->fetchColumn() ?: 0;
+
+            // Payment Methods Breakdown
+            $stmtMethods = $this->db->prepare("SELECT payment_method, COUNT(*) as count, SUM(amount) as total FROM payments WHERE room_id = ? AND status = 'verified' GROUP BY payment_method");
+            $stmtMethods->execute([$roomId]);
+            $methods = $stmtMethods->fetchAll(PDO::FETCH_ASSOC);
+
+            // Total Overdue
+            $stmtOverdue = $this->db->prepare("SELECT SUM(grand_total - amount_paid) as overdue FROM billing_cycles WHERE room_id = ? AND payment_status = 'overdue'");
+            $stmtOverdue->execute([$roomId]);
+            $totalOverdue = $stmtOverdue->fetchColumn() ?: 0;
+
+            // Total Pending Verification
+            $stmtPending = $this->db->prepare("SELECT SUM(amount) as pending FROM payments WHERE room_id = ? AND status = 'pending'");
+            $stmtPending->execute([$roomId]);
+            $totalPending = $stmtPending->fetchColumn() ?: 0;
+
+            echo json_encode([
+                "success" => true,
+                "data" => [
+                    "totalPaid" => (float)$totalPaid,
+                    "totalPaidThisYear" => (float)$totalPaidThisYear,
+                    "totalOverdue" => (float)$totalOverdue,
+                    "totalPending" => (float)$totalPending,
+                    "methods" => $methods
+                ]
+            ]);
+        } catch (Exception $e) {
+            echo json_encode(["success" => false, "message" => "Error generating insights"]);
+        }
     }
 }

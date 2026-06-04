@@ -11,6 +11,7 @@ require_once __DIR__ . '/../controllers/ForecastController.php';
 require_once __DIR__ . '/../controllers/PaymentController.php';
 require_once __DIR__ . '/../controllers/PenaltyController.php';
 require_once __DIR__ . '/../controllers/AuditController.php';
+require_once __DIR__ . '/../controllers/SyncController.php';
 require_once __DIR__ . '/../middlewares/IoTMiddleware.php';
 
 class Router {
@@ -26,6 +27,7 @@ class Router {
     private $paymentController;
     private $penaltyController;
     private $auditController;
+    private $syncController;
     private $iotMiddleware;
 
     public function __construct($dbConnection) {
@@ -41,6 +43,7 @@ class Router {
         $this->paymentController = new PaymentController($dbConnection);
         $this->penaltyController = new PenaltyController($dbConnection);
         $this->auditController = new AuditController($dbConnection);
+        $this->syncController = new SyncController($dbConnection);
         $this->iotMiddleware = new IoTMiddleware($dbConnection);
     }
 
@@ -318,6 +321,9 @@ class Router {
             case 'getBillingHistory':
                 $this->paymentController->getBillingHistory($authenticatedUser, $data);
                 return true;
+            case 'getPaymentInsights':
+                $this->paymentController->getPaymentInsights($authenticatedUser, $data);
+                return true;
             case 'submitOfflinePayment':
                 $this->paymentController->submitOfflinePayment($authenticatedUser, $data);
                 return true;
@@ -349,6 +355,11 @@ class Router {
 
             case 'triggerPenaltyCalculation':
                 $this->penaltyController->triggerCalculation($authenticatedUser);
+                return true;
+
+            // SYNC
+            case 'syncState':
+                $this->syncController->syncState($authenticatedUser, $data);
                 return true;
 
             default:

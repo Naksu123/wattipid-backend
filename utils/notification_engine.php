@@ -256,9 +256,9 @@ class NotificationEngine {
             if (isset($decoded['data'])) {
                 foreach ($decoded['data'] as $i => $ticket) {
                     if (isset($ticket['status']) && $ticket['status'] === 'error') {
-                        // Deactivate invalid tokens
-                        if (isset($ticket['details']['error']) && $ticket['details']['error'] === 'DeviceNotRegistered') {
-                            $this->deactivateToken($tokens[$i]['expo_push_token']);
+                        $errorMsg = $ticket['message'] ?? '';
+                        if (strpos($errorMsg, 'DeviceNotRegistered') !== false || strpos($errorMsg, 'PushTokenInvalid') !== false) {
+                            $this->invalidateToken($tokens[$i]['expo_push_token']);
                         }
                     }
                 }
@@ -461,28 +461,22 @@ class NotificationEngine {
 
     public function registerToken($userId, $token, $deviceName = null, $platform = 'android') {
         $stmt = $this->conn->prepare("
-            INSERT INTO device_tokens (user_id, expo_push_token, device_name, platform, is_active, last_active)
-            VALUES (?, ?, ?, ?, 1, NOW())
-            ON DUPLICATE KEY UPDATE 
-                user_id = VALUES(user_id),
-                device_name = VALUES(device_name),
-                is_active = 1,
-                last_active = NOW()
+            UPDATE users SET expo_push_token = ? WHERE id = ?
         ");
-        $stmt->execute([$userId, $token, $deviceName, $platform]);
+        $stmt->execute([$token, $userId]);
     }
 
     private function getActiveTokens($userId) {
         $stmt = $this->conn->prepare("
-            SELECT expo_push_token FROM device_tokens
-            WHERE user_id = ? AND is_active = 1
+            SELECT expo_push_token FROM users
+            WHERE id = ? AND expo_push_token IS NOT NULL
         ");
         $stmt->execute([$userId]);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
-    private function deactivateToken($token) {
-        $stmt = $this->conn->prepare("UPDATE device_tokens SET is_active = 0 WHERE expo_push_token = ?");
+    private function invalidateToken($token) {
+        $stmt = $this->conn->prepare("UPDATE users SET expo_push_token = NULL WHERE expo_push_token = ?");
         $stmt->execute([$token]);
     }
 

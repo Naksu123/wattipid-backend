@@ -292,6 +292,52 @@ class BillingNotificationService {
     }
 
     // =========================================================
+    // CHECK 4: Payment Verification Alerts (Real-time trigger)
+    // =========================================================
+    public function sendPaymentVerificationAlert($roomId, $userId, $amountPaid, $status, $paymentMethod, $remainingBalance) {
+        $settings = $this->getPreferences($userId, $roomId);
+        if (!$settings['notifications_enabled'] || !($settings['payment_alerts'] ?? true)) return false;
+
+        $isPartial = $status === 'partially_paid';
+        
+        $title = $isPartial ? '💵 Partial Payment Verified' : '✅ Payment Verified';
+        $message = $isPartial 
+            ? "Your partial payment of ₱" . number_format($amountPaid, 2) . " via " . strtoupper($paymentMethod) . " has been verified. Remaining balance: ₱" . number_format($remainingBalance, 2) . "."
+            : "Your payment of ₱" . number_format($amountPaid, 2) . " via " . strtoupper($paymentMethod) . " has been verified. Your bill is now fully paid!";
+
+        $alert = [
+            'type' => $isPartial ? 'payment_partial' : 'payment_verified',
+            'category' => 'payment',
+            'severity' => $isPartial ? 'info' : 'success',
+            'title' => $title,
+            'message' => $message,
+            'data' => [
+                'amount_paid' => $amountPaid,
+                'payment_method' => $paymentMethod,
+                'remaining_balance' => $remainingBalance
+            ]
+        ];
+
+        try {
+            $this->conn->beginTransaction();
+            $notifId = $this->saveNotification($userId, $roomId, $alert);
+            $this->conn->commit();
+
+            $alert['id'] = $notifId;
+
+            if ($settings['push_enabled']) {
+                $this->queuePush($userId, $alert);
+            }
+
+            return true;
+        } catch (Exception $e) {
+            if ($this->conn->inTransaction()) $this->conn->rollBack();
+            error_log("[BillingNotifSvc] Error saving payment alert: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    // =========================================================
     // HELPERS
     // =========================================================
 
