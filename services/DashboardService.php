@@ -324,7 +324,7 @@ class DashboardService {
     public function getAvailableBillingCycles($roomId, $userId, $role) {
         $id = $this->resolveIdentifier($roomId, $userId, $role);
         
-        $stmt = $this->conn->prepare("SELECT id, cycle_start, cycle_end, total_kwh, total_cost, status FROM billing_cycles WHERE room_id = ? ORDER BY cycle_start DESC LIMIT 24");
+        $stmt = $this->conn->prepare("SELECT id, invoice_number, cycle_start, cycle_end, total_kwh, total_cost, penalty_amount, status, payment_status, due_date FROM billing_cycles WHERE room_id = ? ORDER BY cycle_start DESC LIMIT 24");
         $stmt->execute([$id['value']]);
         $cycles = $stmt->fetchAll(PDO::FETCH_ASSOC);
         
