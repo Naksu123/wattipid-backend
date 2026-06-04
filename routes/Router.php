@@ -12,6 +12,7 @@ require_once __DIR__ . '/../controllers/PaymentController.php';
 require_once __DIR__ . '/../controllers/PenaltyController.php';
 require_once __DIR__ . '/../controllers/AuditController.php';
 require_once __DIR__ . '/../controllers/SyncController.php';
+require_once __DIR__ . '/../controllers/TermsController.php';
 require_once __DIR__ . '/../middlewares/IoTMiddleware.php';
 
 class Router {
@@ -28,6 +29,7 @@ class Router {
     private $penaltyController;
     private $auditController;
     private $syncController;
+    private $termsController;
     private $iotMiddleware;
 
     public function __construct($dbConnection) {
@@ -44,6 +46,7 @@ class Router {
         $this->penaltyController = new PenaltyController($dbConnection);
         $this->auditController = new AuditController($dbConnection);
         $this->syncController = new SyncController($dbConnection);
+        $this->termsController = new TermsController($dbConnection);
         $this->iotMiddleware = new IoTMiddleware($dbConnection);
     }
 
@@ -95,6 +98,27 @@ class Router {
 
             case 'requestPasswordReset':
                 $this->authController->requestPasswordReset($data);
+                return true;
+
+            case 'getActiveTerms':
+                ResponseHelper::sendRaw($this->termsController->getActiveTerms());
+                return true;
+                
+            case 'acceptTerms':
+                $tenantId = $authenticatedUser['id'];
+                $versionId = $data['version_id'] ?? null;
+                $ipAddress = $data['ip_address'] ?? null;
+                $deviceInfo = $data['device_info'] ?? null;
+                if (!$versionId) {
+                    ResponseHelper::error("Version ID is required.");
+                    return true;
+                }
+                ResponseHelper::sendRaw($this->termsController->acceptTerms($tenantId, $versionId, $ipAddress, $deviceInfo));
+                return true;
+                
+            case 'checkTermsAcceptance':
+                $tenantId = $authenticatedUser['id'];
+                ResponseHelper::sendRaw($this->termsController->checkAcceptance($tenantId));
                 return true;
 
             case 'verifyResetOTP':

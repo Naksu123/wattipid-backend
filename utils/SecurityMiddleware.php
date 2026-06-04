@@ -77,5 +77,63 @@ class SecurityMiddleware {
 
         return $data;
     }
+
+    /**
+     * Feature 4: Secure File Upload Validation
+     * Validates Base64 uploads for size (10MB max), format, and hidden malware (magic bytes)
+     */
+    public static function validateFileUpload($base64String) {
+        if (empty($base64String)) return true; // Optional
+
+        // 1. Max 10MB limit. Base64 encoding inflates size by 33%.
+        // 10MB actual = ~13.3MB base64 string = ~13981013 chars.
+        if (strlen($base64String) > 13981013) {
+            throw new Exception("File size exceeds 10MB maximum limit.");
+        }
+
+        // 2. Format validation (Must be image)
+        if (!preg_match('/^data:image\/(jpeg|png|jpg);base64,/', $base64String)) {
+            throw new Exception("Invalid file format. Only JPG and PNG are allowed.");
+        }
+
+        // 3. Extract base64 payload
+        $base64Data = substr($base64String, strpos($base64String, ',') + 1);
+        $decodedData = base64_decode($base64Data, true);
+
+        if ($decodedData === false) {
+            throw new Exception("Uploaded file is corrupted.");
+        }
+
+        // 4. Magic Bytes Validation (Prevent malicious scripts masked as images)
+        if (class_exists('finfo')) {
+            $finfo = new finfo(FILEINFO_MIME_TYPE);
+            $mime = $finfo->buffer($decodedData);
+
+            if (!in_array($mime, ['image/jpeg', 'image/png'])) {
+                throw new Exception("Security scan failed: Hidden malicious content detected.");
+            }
+        } else {
+            // Fallback magic byte check if finfo extension is disabled in XAMPP
+            $header = bin2hex(substr($decodedData, 0, 4));
+            $validHeaders = [
+                'ffd8ffe0', // JPEG
+                'ffd8ffe1', // JPEG EXIF
+                'ffd8ffe2', // JPEG
+                'ffd8ffe8', // SPIFF
+                '89504e47'  // PNG
+            ];
+            $isValid = false;
+            foreach ($validHeaders as $valid) {
+                if (strpos($header, $valid) === 0) {
+                    $isValid = true; break;
+                }
+            }
+            if (!$isValid) {
+                throw new Exception("Security scan failed: Invalid file header signature.");
+            }
+        }
+
+        return true;
+    }
 }
 ?>

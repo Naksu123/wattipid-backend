@@ -26,9 +26,18 @@ class PaymentController {
             return;
         }
 
-        if (in_array(strtolower($paymentMethod), ['gcash', 'maya']) && empty($proofUrl)) {
-            echo json_encode(["success" => false, "message" => "Proof of payment is required for e-wallets"]);
-            return;
+        if (in_array(strtolower($paymentMethod), ['gcash', 'maya'])) {
+            if (empty($proofUrl)) {
+                echo json_encode(["success" => false, "message" => "Proof of payment is required for e-wallets"]);
+                return;
+            }
+            try {
+                require_once __DIR__ . '/../utils/SecurityMiddleware.php';
+                SecurityMiddleware::validateFileUpload($proofUrl);
+            } catch (Exception $e) {
+                echo json_encode(["success" => false, "message" => $e->getMessage()]);
+                return;
+            }
         }
 
         try {

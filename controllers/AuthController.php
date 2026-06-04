@@ -29,12 +29,16 @@ class AuthController {
         $password = $data['password'] ?? null;
         $role = $data['role'] ?? 'tenant';
         $code = $data['code'] ?? null;
+        
+        $termsVersionId = $data['terms_version_id'] ?? null;
+        $ipAddress = $data['ip_address'] ?? null;
+        $deviceInfo = $data['device_info'] ?? null;
 
         if (!$name || !$email || !$password) {
             ResponseHelper::error("Missing required fields", 400);
         }
 
-        $result = $this->authService->register($name, $email, $password, $role, $code);
+        $result = $this->authService->register($name, $email, $password, $role, $code, $termsVersionId, $ipAddress, $deviceInfo);
 
         if ($result['success']) {
             ResponseHelper::sendRaw($result); // Send exactly as formatted in AuthService

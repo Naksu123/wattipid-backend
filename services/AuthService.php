@@ -45,12 +45,31 @@ class AuthService {
         $this->logLoginAttempt($email, true, $ip);
         $this->userRepo->updateLastLogin($user['id']);
 
+        // Log to activity_logs
+        $this->conn->prepare("INSERT INTO activity_logs (user_id, room_id, type, title, message) VALUES (?, ?, 'auth', 'User Login', 'User logged in successfully.')")->execute([$user['id'], $user['room_id']]);
+
         // 2. Generate Dual Tokens (Access + Refresh)
         // Access Token: Short-lived (15 mins), carries 'ver' (token_version)
         $accessToken = $this->generateAccessToken($user);
         
         // Refresh Token: Long-lived (7 days), stored hashed in DB
         $refreshToken = $this->generateAndStoreRefreshToken($user['id']);
+
+        // Check Terms Acceptance for Tenants
+        $requiresTerms = false;
+        if ($user['role'] === 'tenant') {
+            $stmt = $this->conn->prepare("SELECT id FROM terms_versions WHERE is_active = TRUE ORDER BY id DESC LIMIT 1");
+            $stmt->execute();
+            $activeVersion = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if ($activeVersion) {
+                $stmt = $this->conn->prepare("SELECT id FROM terms_acceptance_logs WHERE tenant_id = ? AND version_id = ?");
+                $stmt->execute([$user['id'], $activeVersion['id']]);
+                if ($stmt->rowCount() == 0) {
+                    $requiresTerms = true;
+                }
+            }
+        }
 
         unset($user['password_hash']);
         return [
@@ -59,7 +78,8 @@ class AuthService {
             'data' => [
                 'user' => $user,
                 'token' => $accessToken,
-                'refreshToken' => $refreshToken
+                'refreshToken' => $refreshToken,
+                'requires_terms_acceptance' => $requiresTerms
             ]
         ];
     }
@@ -138,6 +158,9 @@ class AuthService {
         $stmt = $this->conn->prepare("UPDATE users SET token_version = token_version + 1 WHERE id = ?");
         $stmt->execute([$userId]);
 
+        // Log to activity_logs
+        $this->conn->prepare("INSERT INTO activity_logs (user_id, type, title, message) VALUES (?, 'auth', 'User Logout', 'User logged out.')")->execute([$userId]);
+
         return ['success' => true, 'message' => 'Logged out successfully.'];
     }
 
@@ -150,7 +173,7 @@ class AuthService {
         return "$base64Header.$base64Payload.$base64Signature";
     }
 
-    public function register($name, $email, $password, $role = 'tenant', $code = null) {
+    public function register($name, $email, $password, $role = 'tenant', $code = null, $termsVersionId = null, $ipAddress = null, $deviceInfo = null) {
         $roomId = null;
 
         if ($role === 'tenant') {
@@ -183,6 +206,11 @@ class AuthService {
                 }
                 if (!$this->roomRepo->markAsOccupied($roomId, $name)) {
                     throw new Exception("Registration failed: Could not assign room.");
+                }
+
+                if ($termsVersionId) {
+                    $stmt = $this->conn->prepare("INSERT INTO terms_acceptance_logs (tenant_id, version_id, ip_address, device_info) VALUES (?, ?, ?, ?)");
+                    $stmt->execute([$userId, $termsVersionId, $ipAddress, $deviceInfo]);
                 }
             }
 

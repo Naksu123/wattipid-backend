@@ -79,7 +79,7 @@ try {
     $data = SecurityMiddleware::sanitizeInput($data);
 
     // Auth Middleware (Only enforce if not a public action)
-    $publicActions = ['login', 'register', 'verifyOTP', 'refreshToken', 'requestPasswordReset', 'verifyResetOTP', 'resetPassword', 'sendVerificationCode', 'resendVerificationCode', 'getTenantInvitationByEmail', 'logConsumption', 'getLatestConsumption'];
+    $publicActions = ['login', 'register', 'verifyOTP', 'refreshToken', 'requestPasswordReset', 'verifyResetOTP', 'resetPassword', 'sendVerificationCode', 'resendVerificationCode', 'getTenantInvitationByEmail', 'logConsumption', 'getLatestConsumption', 'getActiveTerms'];
     
     $authenticatedUser = null;
     require_once __DIR__ . '/middlewares/AuthMiddleware.php';
