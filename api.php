@@ -98,6 +98,14 @@ try {
         $penaltySvc->calculateDailyPenalties();
     }
 
+    // Lazy Evaluation: Check billing notifications for tenants.
+    // Fires budget threshold, due date, and overdue/penalty alerts with built-in cooldowns.
+    if ($authenticatedUser && $authenticatedUser['role'] === 'tenant' && $authenticatedUser['room_id']) {
+        require_once __DIR__ . '/services/BillingNotificationService.php';
+        $billingNotifSvc = new BillingNotificationService($conn);
+        $billingNotifSvc->checkAll($authenticatedUser['room_id'], $authenticatedUser['id']);
+    }
+
     // Route Request
     $router = new Router($conn);
     if (!$router->handle($action, $data, $authenticatedUser)) {

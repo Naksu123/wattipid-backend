@@ -243,6 +243,12 @@ class Router {
             case 'updateAlertSettings':
                 $this->notificationController->updateAlertSettings($authenticatedUser, $data);
                 return true;
+            case 'searchNotifications':
+                $this->notificationController->searchNotifications($authenticatedUser, $data);
+                return true;
+            case 'getNotificationsByCategory':
+                $this->notificationController->getNotificationsByCategory($authenticatedUser, $data);
+                return true;
 
             // SETTINGS & TIPS
             case 'getSetting':

@@ -134,6 +134,56 @@ class NotificationController {
         ResponseHelper::sendRaw($result);
     }
 
+    public function searchNotifications($authenticatedUser, $data) {
+        $userId = $authenticatedUser['id'];
+        $query = trim($data['query'] ?? '');
+        $limit = (int) ($data['limit'] ?? 20);
+        $offset = (int) ($data['offset'] ?? 0);
+
+        if (strlen($query) < 2) {
+            ResponseHelper::sendRaw(['success' => true, 'data' => []]);
+            return;
+        }
+
+        try {
+            $searchTerm = '%' . $query . '%';
+            $sql = "SELECT * FROM notification_history 
+                    WHERE user_id = ? AND (title LIKE ? OR message LIKE ?)
+                    ORDER BY created_at DESC LIMIT {$limit} OFFSET {$offset}";
+            $stmt = $this->conn->prepare($sql);
+            $stmt->execute([$userId, $searchTerm, $searchTerm]);
+            $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            ResponseHelper::sendRaw(['success' => true, 'data' => $results]);
+        } catch (Exception $e) {
+            error_log("searchNotifications error: " . $e->getMessage());
+            ResponseHelper::sendRaw(['success' => true, 'data' => []]);
+        }
+    }
+
+    public function getNotificationsByCategory($authenticatedUser, $data) {
+        $userId = $authenticatedUser['id'];
+        $category = $data['category'] ?? null;
+        $limit = (int) ($data['limit'] ?? 30);
+        $offset = (int) ($data['offset'] ?? 0);
+
+        try {
+            if ($category && $category !== 'all') {
+                $sql = "SELECT * FROM notification_history WHERE user_id = ? AND category = ? ORDER BY created_at DESC LIMIT {$limit} OFFSET {$offset}";
+                $stmt = $this->conn->prepare($sql);
+                $stmt->execute([$userId, $category]);
+            } else {
+                $sql = "SELECT * FROM notification_history WHERE user_id = ? ORDER BY created_at DESC LIMIT {$limit} OFFSET {$offset}";
+                $stmt = $this->conn->prepare($sql);
+                $stmt->execute([$userId]);
+            }
+            $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            ResponseHelper::sendRaw(['success' => true, 'data' => $results]);
+        } catch (Exception $e) {
+            error_log("getNotificationsByCategory error: " . $e->getMessage());
+            ResponseHelper::sendRaw(['success' => true, 'data' => []]);
+        }
+    }
+
     /**
      * Helper: Check if a table exists in the database.
      */

@@ -509,6 +509,13 @@ class NotificationEngine {
                 'sound_enabled' => 1,
                 'quiet_hours_start' => '22:00:00',
                 'quiet_hours_end' => '06:00:00',
+                'due_date_alerts' => 1,
+                'overdue_alerts' => 1,
+                'penalty_alerts' => 1,
+                'payment_alerts' => 1,
+                'budget_50_alerts' => 1,
+                'budget_75_alerts' => 1,
+                'budget_90_alerts' => 1,
             ];
         }
         return $settings;
@@ -518,8 +525,10 @@ class NotificationEngine {
         $stmt = $this->conn->prepare("
             INSERT INTO alert_settings (user_id, room_id, daily_budget_limit, monthly_budget_limit, 
                 abnormal_threshold_pct, spike_watts, high_usage_minutes, forecast_warning_pct,
-                notifications_enabled, push_enabled, sound_enabled)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                notifications_enabled, push_enabled, sound_enabled,
+                due_date_alerts, overdue_alerts, penalty_alerts, payment_alerts,
+                budget_50_alerts, budget_75_alerts, budget_90_alerts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE
                 daily_budget_limit = VALUES(daily_budget_limit),
                 monthly_budget_limit = VALUES(monthly_budget_limit),
@@ -529,7 +538,14 @@ class NotificationEngine {
                 forecast_warning_pct = VALUES(forecast_warning_pct),
                 notifications_enabled = VALUES(notifications_enabled),
                 push_enabled = VALUES(push_enabled),
-                sound_enabled = VALUES(sound_enabled)
+                sound_enabled = VALUES(sound_enabled),
+                due_date_alerts = VALUES(due_date_alerts),
+                overdue_alerts = VALUES(overdue_alerts),
+                penalty_alerts = VALUES(penalty_alerts),
+                payment_alerts = VALUES(payment_alerts),
+                budget_50_alerts = VALUES(budget_50_alerts),
+                budget_75_alerts = VALUES(budget_75_alerts),
+                budget_90_alerts = VALUES(budget_90_alerts)
         ");
         $stmt->execute([
             $userId, $roomId,
@@ -542,6 +558,13 @@ class NotificationEngine {
             $settings['notifications_enabled'] ?? 1,
             $settings['push_enabled'] ?? 1,
             $settings['sound_enabled'] ?? 1,
+            $settings['due_date_alerts'] ?? 1,
+            $settings['overdue_alerts'] ?? 1,
+            $settings['penalty_alerts'] ?? 1,
+            $settings['payment_alerts'] ?? 1,
+            $settings['budget_50_alerts'] ?? 1,
+            $settings['budget_75_alerts'] ?? 1,
+            $settings['budget_90_alerts'] ?? 1,
         ]);
     }
 
