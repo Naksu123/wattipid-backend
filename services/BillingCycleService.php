@@ -49,8 +49,73 @@ class BillingCycleService {
             $finalKwh = $totals['e'] ?? 0;
             $finalCost = $totals['c'] ?? 0;
 
-            $update = $this->db->prepare("UPDATE billing_cycles SET status = 'completed', total_kwh = ?, total_cost = ?, due_date = DATE_ADD(NOW(), INTERVAL 7 DAY) WHERE id = ?");
-            $update->execute([$finalKwh, $finalCost, $activeCycle['id']]);
+            // Fetch settings and room info for detailed breakdown
+            $rateQuery = $this->db->query("SELECT setting_value FROM settings WHERE setting_key = 'rate_per_kwh'");
+            $rateRow = $rateQuery->fetch(PDO::FETCH_ASSOC);
+            $rate = $rateRow ? (float)$rateRow['setting_value'] : 12.50;
+
+            $roomQuery = $this->db->prepare("SELECT monthly_rent FROM rooms WHERE room_id = ?");
+            $roomQuery->execute([$roomId]);
+            $roomRow = $roomQuery->fetch(PDO::FETCH_ASSOC);
+            $monthlyRent = $roomRow ? (float)$roomRow['monthly_rent'] : 0.00;
+
+            // Fetch previous cycle to get previous reading and previous balance
+            $prevQuery = $this->db->prepare("SELECT current_reading, grand_total, payment_status FROM billing_cycles WHERE room_id = ? AND id < ? ORDER BY id DESC LIMIT 1");
+            $prevQuery->execute([$roomId, $activeCycle['id']]);
+            $prevCycle = $prevQuery->fetch(PDO::FETCH_ASSOC);
+            
+            $previousReading = $prevCycle ? (float)$prevCycle['current_reading'] : 0.00;
+            $currentReading = $previousReading + $finalKwh;
+            
+            // Check previous balance if unpaid
+            $previousBalance = 0.00;
+            if ($prevCycle && in_array($prevCycle['payment_status'], ['unpaid', 'overdue', 'rejected'])) {
+                $previousBalance = (float)$prevCycle['grand_total'];
+            }
+
+            // Defaults for new fields (Can be updated later via Landlord dashboard)
+            $additionalCharges = 0.00;
+            $discounts = 0.00;
+            
+            // Re-apply existing penalty if any (though usually 0 at closing time)
+            $penaltyAmount = (float)($activeCycle['penalty_amount'] ?? 0);
+
+            $grandTotal = $monthlyRent + $finalCost + $previousBalance + $additionalCharges + $penaltyAmount - $discounts;
+            
+            $invoiceNumber = 'WT-' . date('Ym', strtotime($activeCycle['cycle_end'])) . '-' . $activeCycle['id'];
+
+            $update = $this->db->prepare("UPDATE billing_cycles SET 
+                status = 'completed', 
+                total_kwh = ?, 
+                total_cost = ?, 
+                due_date = DATE_ADD(NOW(), INTERVAL 7 DAY),
+                previous_reading = ?,
+                current_reading = ?,
+                rate_per_kwh = ?,
+                monthly_rent = ?,
+                electricity_charge = ?,
+                previous_balance = ?,
+                additional_charges = ?,
+                discounts = ?,
+                grand_total = ?,
+                invoice_number = ?
+                WHERE id = ?");
+                
+            $update->execute([
+                $finalKwh, 
+                $finalCost, 
+                $previousReading, 
+                $currentReading, 
+                $rate, 
+                $monthlyRent, 
+                $finalCost, // electricity_charge = total_cost
+                $previousBalance, 
+                $additionalCharges, 
+                $discounts, 
+                $grandTotal, 
+                $invoiceNumber,
+                $activeCycle['id']
+            ]);
 
             // 3. Create the next cycle based on the exact start day of the previous cycle
             // This guarantees the cycle day NEVER drifts.
@@ -60,8 +125,9 @@ class BillingCycleService {
             // Edge case: what if the system was offline for 3 months? Fast-forward until the end date is > now.
             while ($nextCycleEnd < $now) {
                 // Insert empty completed cycles to preserve history continuity
-                $insert = $this->db->prepare("INSERT INTO billing_cycles (room_id, tenant_name, cycle_start, cycle_end, total_kwh, total_cost, status, due_date) VALUES (?, ?, ?, ?, 0, 0, 'completed', DATE_ADD(?, INTERVAL 7 DAY))");
-                $insert->execute([$roomId, $activeCycle['tenant_name'], $nextCycleStart, $nextCycleEnd, $nextCycleEnd]);
+                $emptyInvoice = 'WT-' . date('Ym', strtotime($nextCycleEnd)) . '-0';
+                $insert = $this->db->prepare("INSERT INTO billing_cycles (room_id, tenant_name, cycle_start, cycle_end, total_kwh, total_cost, status, due_date, invoice_number, current_reading, previous_reading) VALUES (?, ?, ?, ?, 0, 0, 'completed', DATE_ADD(?, INTERVAL 7 DAY), ?, ?, ?)");
+                $insert->execute([$roomId, $activeCycle['tenant_name'], $nextCycleStart, $nextCycleEnd, $nextCycleEnd, $emptyInvoice, $currentReading, $currentReading]);
                 
                 $nextCycleStart = $this->getSafeNextMonth($nextCycleStart);
                 $nextCycleEnd = date('Y-m-d 23:59:59', strtotime($this->getSafeNextMonth($nextCycleStart) . ' -1 day'));

@@ -310,6 +310,14 @@ class Router {
             case 'submitPayment':
                 $this->paymentController->submitPayment($authenticatedUser, $data);
                 return true;
+
+            case 'getBillingDetails':
+                $this->paymentController->getBillingDetails($authenticatedUser, $data);
+                return true;
+
+            case 'getBillingHistory':
+                $this->paymentController->getBillingHistory($authenticatedUser, $data);
+                return true;
             case 'submitOfflinePayment':
                 $this->paymentController->submitOfflinePayment($authenticatedUser, $data);
                 return true;

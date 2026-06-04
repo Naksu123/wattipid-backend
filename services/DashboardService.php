@@ -290,14 +290,17 @@ class DashboardService {
                 $log['power'] = (float)$log['avgPower'];
                 
                 if ($filter === 'daily') {
-                    $dateTitle = date('F Y', strtotime($log['group_date']));
-                    $log['time_label'] = date('F j', strtotime($log['group_date']));
+                    $groupDateStr = $log['group_date'] ?? $log['timestamp'] ?? date('Y-m-d');
+                    $dateTitle = date('F Y', strtotime($groupDateStr));
+                    $log['time_label'] = date('F j', strtotime($groupDateStr));
                 } else if ($filter === 'weekly') {
-                    $dateTitle = substr($log['group_date'], 0, 4); // Year
-                    $log['time_label'] = 'Week ' . substr($log['group_date'], -2);
+                    $groupDateStr = $log['group_date'] ?? (date('Y') . '-W' . date('W'));
+                    $dateTitle = substr((string)$groupDateStr, 0, 4); // Year
+                    $log['time_label'] = 'Week ' . substr((string)$groupDateStr, -2);
                 } else { // monthly
-                    $dateTitle = substr($log['group_date'], 0, 4); // Year
-                    $log['time_label'] = date('F', strtotime($log['group_date'] . '-01'));
+                    $groupDateStr = $log['group_date'] ?? date('Y-m');
+                    $dateTitle = substr((string)$groupDateStr, 0, 4); // Year
+                    $log['time_label'] = date('F', strtotime($groupDateStr . '-01'));
                 }
 
                 if (!isset($grouped[$dateTitle])) {

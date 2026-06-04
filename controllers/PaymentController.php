@@ -279,4 +279,81 @@ class PaymentController {
         $ip = $_SERVER['REMOTE_ADDR'] ?? null;
         $stmt->execute([$actorId, $role, $action, $table, $recordId, $oldVal, $newVal, $ip]);
     }
+
+    public function getBillingDetails($authenticatedUser, $data) {
+        if (!$authenticatedUser) {
+            echo json_encode(["success" => false, "message" => "Unauthorized"]);
+            return;
+        }
+        $invoiceNumber = $data['invoiceNumber'] ?? null;
+        $id = $data['id'] ?? null;
+        $roomId = $data['roomId'] ?? null; // For validation
+
+        if (!$invoiceNumber && !$id) {
+            echo json_encode(["success" => false, "message" => "Missing invoice identifier"]);
+            return;
+        }
+
+        $query = "SELECT * FROM billing_cycles WHERE ";
+        $params = [];
+        if ($invoiceNumber) {
+            $query .= "invoice_number = ?";
+            $params[] = $invoiceNumber;
+        } else {
+            $query .= "id = ?";
+            $params[] = $id;
+        }
+
+        if ($roomId && $authenticatedUser['role'] === 'tenant') {
+            $query .= " AND room_id = ?";
+            $params[] = $roomId;
+        }
+
+        $stmt = $this->db->prepare($query);
+        $stmt->execute($params);
+        $billing = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$billing) {
+            echo json_encode(["success" => false, "message" => "Billing record not found"]);
+            return;
+        }
+        
+        // Fetch applied payments
+        $stmtPayments = $this->db->prepare("SELECT amount, status, created_at FROM payments WHERE billing_cycle_id = ? ORDER BY created_at DESC");
+        $stmtPayments->execute([$billing['id']]);
+        $payments = $stmtPayments->fetchAll(PDO::FETCH_ASSOC);
+        
+        $billing['payments'] = $payments;
+
+        echo json_encode(["success" => true, "data" => $billing]);
+    }
+
+    public function getBillingHistory($authenticatedUser, $data) {
+        if (!$authenticatedUser) {
+            echo json_encode(["success" => false, "message" => "Unauthorized"]);
+            return;
+        }
+        $roomId = $data['roomId'] ?? null;
+        $limit = $data['limit'] ?? 20;
+        $offset = $data['offset'] ?? 0;
+
+        if (!$roomId && $authenticatedUser['role'] === 'tenant') {
+            $roomId = $authenticatedUser['room_id'] ?? null;
+        }
+        
+        if (!$roomId) {
+            echo json_encode(["success" => false, "message" => "Room ID required"]);
+            return;
+        }
+
+        // We only show completed cycles in billing history
+        $stmt = $this->db->prepare("SELECT * FROM billing_cycles WHERE room_id = ? AND status = 'completed' ORDER BY cycle_end DESC LIMIT ? OFFSET ?");
+        $stmt->bindValue(1, $roomId);
+        $stmt->bindValue(2, (int)$limit, PDO::PARAM_INT);
+        $stmt->bindValue(3, (int)$offset, PDO::PARAM_INT);
+        $stmt->execute();
+        
+        $history = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        echo json_encode(["success" => true, "data" => $history]);
+    }
 }
