@@ -21,7 +21,7 @@ class AuditController {
             $financialLogs = $financialStmt->fetchAll(PDO::FETCH_ASSOC);
 
             // Fetch General Activity Logs
-            $activityQuery = "SELECT id, 'activity' as log_type, type as action_type, title as table_affected, NULL as old_value, message as new_value, NULL as ip_address, created_at, user_id as actor_id
+            $activityQuery = "SELECT id, 'activity' as log_type, action_type, entity_type as table_affected, NULL as old_value, description as new_value, NULL as ip_address, created_at, actor_id
                               FROM activity_logs 
                               ORDER BY created_at DESC LIMIT 50";
             $activityStmt = $this->db->query($activityQuery);

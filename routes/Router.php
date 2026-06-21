@@ -16,20 +16,35 @@ require_once __DIR__ . '/../controllers/TermsController.php';
 require_once __DIR__ . '/../middlewares/IoTMiddleware.php';
 
 class Router {
+    /** @var AuthController */
     private $authController;
+    /** @var IoTController */
     private $iotController;
+    /** @var DashboardController */
     private $dashboardController;
+    /** @var RoomController */
     private $roomController;
+    /** @var BudgetController */
     private $budgetController;
+    /** @var NotificationController */
     private $notificationController;
+    /** @var SettingController */
     private $settingController;
+    /** @var UserController */
     private $userController;
+    /** @var ForecastController */
     private $forecastController;
+    /** @var PaymentController */
     private $paymentController;
+    /** @var PenaltyController */
     private $penaltyController;
+    /** @var AuditController */
     private $auditController;
+    /** @var SyncController */
     private $syncController;
+    /** @var TermsController */
     private $termsController;
+    /** @var IoTMiddleware */
     private $iotMiddleware;
 
     public function __construct($dbConnection) {

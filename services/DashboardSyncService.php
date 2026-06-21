@@ -17,7 +17,8 @@ class DashboardSyncService {
                 'liveElectricity' => $this->getLiveElectricity($userId, $role),
                 'recentActivities' => $this->getRecentActivities(5),
                 'paymentSummary' => $this->getPaymentSummary($userId, $role),
-                'pendingPayments' => $this->getPendingPayments($userId, $role)
+                'pendingPayments' => $this->getPendingPayments($userId, $role),
+                'unpaidBills' => $this->getUnpaidBills($userId, $role)
             ]
         ];
     }
@@ -88,9 +89,9 @@ class DashboardSyncService {
     }
 
     private function getRecentActivities($limit = 5) {
-        $q = "SELECT a.*, u.name as actor_name 
+        $q = "SELECT a.id, a.type as action_type, a.message as description, a.created_at, u.name as actor_name 
               FROM activity_logs a 
-              LEFT JOIN users u ON a.actor_id = u.id 
+              LEFT JOIN users u ON a.user_id = u.id 
               ORDER BY a.created_at DESC LIMIT :limit";
         $stmt = $this->conn->prepare($q);
         $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
@@ -122,6 +123,19 @@ class DashboardSyncService {
               LEFT JOIN users u ON p.tenant_id = u.id
               WHERE p.status = 'pending'
               ORDER BY p.created_at ASC";
+        $stmt = $this->conn->query($q);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    private function getUnpaidBills($userId, $role) {
+        if ($role !== 'landlord') return [];
+
+        $q = "SELECT b.id, b.room_id, b.total_cost, b.penalty_amount, b.due_date, b.payment_status, 
+                     b.tenant_name, r.room_name
+              FROM billing_cycles b
+              LEFT JOIN rooms r ON b.room_id = r.room_id
+              WHERE b.status = 'completed' AND (b.payment_status = 'unpaid' OR b.payment_status = 'overdue')
+              ORDER BY b.due_date ASC";
         $stmt = $this->conn->query($q);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }

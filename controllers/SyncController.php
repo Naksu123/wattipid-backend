@@ -21,8 +21,8 @@ class SyncController {
             $roomId = $authenticatedUser['room_id'];
         }
 
-        if (!$roomId) {
-            ResponseHelper::error("Room ID required", 400);
+        if (!$roomId && $authenticatedUser['role'] === 'tenant') {
+            ResponseHelper::error("Room ID required for tenant", 400);
             return;
         }
 
@@ -32,8 +32,13 @@ class SyncController {
             $hasUpdates = false;
             
             // 1. Check for new Activities
-            $stmtAct = $this->db->prepare("SELECT * FROM activity_logs WHERE room_id = ? AND created_at > ? ORDER BY created_at DESC LIMIT 10");
-            $stmtAct->execute([$roomId, $lastSync]);
+            if ($roomId) {
+                $stmtAct = $this->db->prepare("SELECT * FROM activity_logs WHERE room_id = ? AND created_at > ? ORDER BY created_at DESC LIMIT 10");
+                $stmtAct->execute([$roomId, $lastSync]);
+            } else {
+                $stmtAct = $this->db->prepare("SELECT * FROM activity_logs WHERE created_at > ? ORDER BY created_at DESC LIMIT 10");
+                $stmtAct->execute([$lastSync]);
+            }
             $activities = $stmtAct->fetchAll(PDO::FETCH_ASSOC);
 
             // 2. Check for new Notifications for this user

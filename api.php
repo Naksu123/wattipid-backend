@@ -19,7 +19,25 @@ ini_set('log_errors', 1);
 error_reporting(E_ALL);
 
 // 3. Centralized JSON Error Handler
-function sendJsonError($message, $code = 500) {
+function sendJsonError($message, $code = 500, $stackTrace = '') {
+    global $conn, $authenticatedUser, $action;
+    
+    // Phase 9: Global Error Monitoring - Store in database
+    if (isset($conn) && $conn) {
+        try {
+            $stmt = $conn->prepare("INSERT INTO error_logs (error_type, endpoint, message, stack_trace, user_id) VALUES (?, ?, ?, ?, ?)");
+            $stmt->execute([
+                $code == 500 ? 'Server Error' : 'API Error',
+                $action ?? 'unknown',
+                $message,
+                $stackTrace,
+                isset($authenticatedUser) ? $authenticatedUser['id'] : null
+            ]);
+        } catch (Throwable $dbErr) {
+            error_log("Failed to write to error_logs: " . $dbErr->getMessage());
+        }
+    }
+
     ob_clean(); // Wipe any accidental output (warnings/notices)
     http_response_code($code);
     header('Content-Type: application/json');
@@ -35,14 +53,14 @@ function sendJsonError($message, $code = 500) {
 register_shutdown_function(function() {
     $error = error_get_last();
     if ($error !== NULL && in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR])) {
-        sendJsonError("A fatal server error occurred. Please check logs.", 500);
+        sendJsonError("A fatal server error occurred. Please check logs.", 500, json_encode($error));
     }
 });
 
 // Handle Exceptions
 set_exception_handler(function ($e) {
     error_log("Wattipid Exception: " . $e->getMessage() . " in " . $e->getFile() . " on line " . $e->getLine());
-    sendJsonError("Server Error: " . $e->getMessage(), 500);
+    sendJsonError("Server Error: " . $e->getMessage(), 500, $e->getTraceAsString());
 });
 
 try {
@@ -116,5 +134,5 @@ try {
     ob_end_flush();
 
 } catch (Throwable $t) {
-    sendJsonError($t->getMessage(), 500);
+    sendJsonError($t->getMessage(), 500, $t->getTraceAsString());
 }
