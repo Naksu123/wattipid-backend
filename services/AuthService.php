@@ -173,6 +173,19 @@ class AuthService {
         return "$base64Header.$base64Payload.$base64Signature";
     }
 
+    private function logAccessCodeAudit($action, $email, $ip) {
+        try {
+            // Find room ID related to this email invitation
+            $stmt = $this->conn->prepare("SELECT room_id FROM invitations WHERE email = ? LIMIT 1");
+            $stmt->execute([$email]);
+            $inv = $stmt->fetch(PDO::FETCH_ASSOC);
+            $roomId = $inv ? $inv['room_id'] : 'unknown';
+
+            $stmt = $this->conn->prepare("INSERT INTO access_code_audits (room_id, action, ip_address) VALUES (?, ?, ?)");
+            $stmt->execute([$roomId, $action, $ip]);
+        } catch (Exception $e) {}
+    }
+
     public function register($name, $email, $password, $role = 'tenant', $code = null, $termsVersionId = null, $ipAddress = null, $deviceInfo = null) {
         $roomId = null;
 
@@ -181,8 +194,13 @@ class AuthService {
                 return ['success' => false, 'message' => 'Access code is required for tenants'];
             }
 
-            $invitation = $this->invitationRepo->findPendingByEmailAndCode($email, $code);
+            require_once __DIR__ . '/../utils/SecurityMiddleware.php';
+            $codeHash = SecurityMiddleware::hashAccessCode($code);
+
+            $invitation = $this->invitationRepo->findPendingByEmailAndCodeHash($email, $codeHash);
             if (!$invitation) {
+                // Log failed attempt
+                $this->logAccessCodeAudit('Failed Registration Attempt', $email, $_SERVER['REMOTE_ADDR'] ?? 'unknown');
                 return ['success' => false, 'message' => 'Invalid or expired access code for this email'];
             }
             $roomId = $invitation['room_id'];
@@ -201,12 +219,14 @@ class AuthService {
 
             // 2. Room & Invitation Updates (Atomic)
             if ($role === 'tenant' && $roomId) {
-                if (!$this->invitationRepo->markAsUsed($email, $code)) {
+                if (!$this->invitationRepo->markAsUsed($email, $codeHash)) {
                     throw new Exception("Registration failed: Could not invalidate invitation code.");
                 }
                 if (!$this->roomRepo->markAsOccupied($roomId, $name)) {
                     throw new Exception("Registration failed: Could not assign room.");
                 }
+
+                $this->logAccessCodeAudit('Registered', $email, $_SERVER['REMOTE_ADDR'] ?? 'unknown');
 
                 if ($termsVersionId) {
                     $stmt = $this->conn->prepare("INSERT INTO terms_acceptance_logs (tenant_id, version_id, ip_address, device_info) VALUES (?, ?, ?, ?)");
@@ -282,9 +302,9 @@ class AuthService {
             </div>
         ";
         
-        $result = sendEmail($email, "", $subject, $body);
+        $result = queueEmail($this->conn, $email, "", $subject, $body, "");
 
-        if ($result['success']) {
+        if ($result) {
             return ['success' => true, 'message' => 'Reset code sent to your email'];
         } else {
             return ['success' => false, 'message' => 'Failed to send email. Please try again later.'];

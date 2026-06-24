@@ -88,7 +88,7 @@ class BillingCycleService {
                 status = 'completed', 
                 total_kwh = ?, 
                 total_cost = ?, 
-                due_date = DATE_ADD(NOW(), INTERVAL 7 DAY),
+                due_date = DATE_ADD(NOW(), INTERVAL 3 DAY),
                 previous_reading = ?,
                 current_reading = ?,
                 rate_per_kwh = ?,
@@ -126,7 +126,7 @@ class BillingCycleService {
             while ($nextCycleEnd < $now) {
                 // Insert empty completed cycles to preserve history continuity
                 $emptyInvoice = 'WT-' . date('Ym', strtotime($nextCycleEnd)) . '-0';
-                $insert = $this->db->prepare("INSERT INTO billing_cycles (room_id, tenant_name, cycle_start, cycle_end, total_kwh, total_cost, status, due_date, invoice_number, current_reading, previous_reading) VALUES (?, ?, ?, ?, 0, 0, 'completed', DATE_ADD(?, INTERVAL 7 DAY), ?, ?, ?)");
+                $insert = $this->db->prepare("INSERT INTO billing_cycles (room_id, tenant_name, cycle_start, cycle_end, total_kwh, total_cost, status, due_date, invoice_number, current_reading, previous_reading) VALUES (?, ?, ?, ?, 0, 0, 'completed', DATE_ADD(?, INTERVAL 3 DAY), ?, ?, ?)");
                 $insert->execute([$roomId, $activeCycle['tenant_name'], $nextCycleStart, $nextCycleEnd, $nextCycleEnd, $emptyInvoice, $currentReading, $currentReading]);
                 
                 $nextCycleStart = $this->getSafeNextMonth($nextCycleStart);

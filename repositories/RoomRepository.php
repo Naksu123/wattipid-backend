@@ -29,9 +29,9 @@ class RoomRepository {
         return $stmt->fetch(PDO::FETCH_ASSOC);
     }
 
-    public function findByTenantCode($code) {
-        $stmt = $this->conn->prepare("SELECT * FROM rooms WHERE tenant_code = ?");
-        $stmt->execute([$code]);
+    public function findByTenantCodeHash($hash) {
+        $stmt = $this->conn->prepare("SELECT * FROM rooms WHERE tenant_code_hash = ?");
+        $stmt->execute([$hash]);
         return $stmt->fetch(PDO::FETCH_ASSOC);
     }
 
@@ -94,9 +94,9 @@ class RoomRepository {
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
-    public function updateTenantCode($roomId, $code) {
-        $stmt = $this->conn->prepare("UPDATE rooms SET tenant_code = ? WHERE room_id = ?");
-        return $stmt->execute([$code, $roomId]);
+    public function updateTenantCodeSecure($roomId, $hash, $encrypted, $masked) {
+        $stmt = $this->conn->prepare("UPDATE rooms SET tenant_code_hash = ?, tenant_code_encrypted = ?, tenant_code_masked = ? WHERE room_id = ?");
+        return $stmt->execute([$hash, $encrypted, $masked, $roomId]);
     }
 
     public function markAsOccupied($roomId, $tenantName) {
@@ -105,7 +105,7 @@ class RoomRepository {
     }
 
     public function markAsVacant($roomId) {
-        $stmt = $this->conn->prepare("UPDATE rooms SET status = 'vacant', tenant_name = NULL, tenant_start_date = NULL, tenant_code = NULL WHERE room_id = ?");
+        $stmt = $this->conn->prepare("UPDATE rooms SET status = 'vacant', tenant_name = NULL, tenant_start_date = NULL, tenant_code_hash = NULL, tenant_code_encrypted = NULL, tenant_code_masked = NULL WHERE room_id = ?");
         return $stmt->execute([$roomId]);
     }
 
@@ -116,14 +116,17 @@ class RoomRepository {
 
     public function createRoom($data) {
         $stmt = $this->conn->prepare("
-            INSERT INTO rooms (room_id, room_type, max_occupancy, status)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO rooms (room_id, room_type, max_occupancy, status, tenant_code_hash, tenant_code_encrypted, tenant_code_masked)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         ");
         return $stmt->execute([
             $data['room_id'],
             !empty($data['room_type']) ? $data['room_type'] : 'Standard',
             isset($data['max_occupancy']) && $data['max_occupancy'] !== '' ? $data['max_occupancy'] : 1,
-            !empty($data['status']) ? $data['status'] : 'vacant'
+            !empty($data['status']) ? $data['status'] : 'vacant',
+            $data['tenant_code_hash'] ?? null,
+            $data['tenant_code_encrypted'] ?? null,
+            $data['tenant_code_masked'] ?? null
         ]);
     }
 

@@ -18,7 +18,8 @@ class DashboardSyncService {
                 'recentActivities' => $this->getRecentActivities(5),
                 'paymentSummary' => $this->getPaymentSummary($userId, $role),
                 'pendingPayments' => $this->getPendingPayments($userId, $role),
-                'unpaidBills' => $this->getUnpaidBills($userId, $role)
+                'unpaidBills' => $this->getUnpaidBills($userId, $role),
+                'penaltyAnalytics' => $this->getPenaltyAnalytics($role)
             ]
         ];
     }
@@ -138,5 +139,30 @@ class DashboardSyncService {
               ORDER BY b.due_date ASC";
         $stmt = $this->conn->query($q);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    private function getPenaltyAnalytics($role) {
+        if ($role !== 'landlord') return null;
+        
+        try {
+            $billsDueToday = $this->conn->query("SELECT COUNT(*) FROM billing_cycles WHERE payment_status = 'unpaid' AND DATE(due_date) = CURDATE() AND status = 'completed'")->fetchColumn();
+            $billsDueTomorrow = $this->conn->query("SELECT COUNT(*) FROM billing_cycles WHERE payment_status = 'unpaid' AND DATE(due_date) = DATE_ADD(CURDATE(), INTERVAL 1 DAY) AND status = 'completed'")->fetchColumn();
+            $overdueBills = $this->conn->query("SELECT COUNT(*) FROM billing_cycles WHERE payment_status = 'overdue'")->fetchColumn();
+            $billsWithPenalties = $this->conn->query("SELECT COUNT(*) FROM billing_cycles WHERE penalty_amount > 0 AND payment_status = 'overdue'")->fetchColumn();
+            $totalOutstanding = $this->conn->query("SELECT COALESCE(SUM(total_cost + COALESCE(penalty_amount, 0)), 0) FROM billing_cycles WHERE payment_status IN ('overdue', 'unpaid') AND status = 'completed'")->fetchColumn();
+            $totalPenaltiesCollected = $this->conn->query("SELECT COALESCE(SUM(penalty_amount), 0) FROM billing_cycles WHERE penalty_amount > 0")->fetchColumn();
+
+            return [
+                'billsDueToday' => (int)$billsDueToday,
+                'billsDueTomorrow' => (int)$billsDueTomorrow,
+                'overdueBills' => (int)$overdueBills,
+                'billsWithPenalties' => (int)$billsWithPenalties,
+                'totalOutstanding' => (float)$totalOutstanding,
+                'totalPenaltiesCollected' => (float)$totalPenaltiesCollected,
+            ];
+        } catch (Exception $e) {
+            error_log("[DashboardSync] getPenaltyAnalytics error: " . $e->getMessage());
+            return null;
+        }
     }
 }

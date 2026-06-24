@@ -22,12 +22,26 @@ class RoomService {
         $this->consumptionRepo = new ConsumptionRepository($dbConnection);
     }
 
+    private function sanitizeRoom($room) {
+        if (!$room) return $room;
+        // The frontend only needs the masked code to display A7X*****QK
+        $room['tenant_code'] = $room['tenant_code_masked'] ?? '—';
+        unset($room['tenant_code_hash']);
+        unset($room['tenant_code_encrypted']);
+        unset($room['tenant_code_masked']);
+        return $room;
+    }
+
     public function getAllRooms() {
-        return ['success' => true, 'data' => $this->roomRepo->getAllRooms()];
+        $rooms = $this->roomRepo->getAllRooms();
+        $sanitized = array_map([$this, 'sanitizeRoom'], $rooms);
+        return ['success' => true, 'data' => $sanitized];
     }
 
     public function getUserRooms($userId, $userName) {
-        return ['success' => true, 'data' => $this->roomRepo->findByUserIdOrTenantName($userId, $userName)];
+        $rooms = $this->roomRepo->findByUserIdOrTenantName($userId, $userName);
+        $sanitized = array_map([$this, 'sanitizeRoom'], $rooms);
+        return ['success' => true, 'data' => $sanitized];
     }
 
     public function getBuildingSummary() {
@@ -41,6 +55,7 @@ class RoomService {
         $totals = $stmt->fetch(PDO::FETCH_ASSOC);
 
         $rooms = $this->roomRepo->getRoomsWithConsumption();
+        $sanitized = array_map([$this, 'sanitizeRoom'], $rooms);
 
         return [
             'success' => true,
@@ -48,13 +63,14 @@ class RoomService {
             'data' => [
                 'stats' => $stats,
                 'totals' => $totals,
-                'rooms' => $rooms
+                'rooms' => $sanitized
             ]
         ];
     }
 
     public function getRoomById($roomId) {
-        return ['success' => true, 'data' => $this->roomRepo->findById($roomId)];
+        $room = $this->roomRepo->findById($roomId);
+        return ['success' => true, 'data' => $this->sanitizeRoom($room)];
     }
 
     public function getRoomByTenantCode($code) {
@@ -67,7 +83,9 @@ class RoomService {
     }
 
     public function getVacantRooms() {
-        return ['success' => true, 'data' => $this->roomRepo->getVacantRooms()];
+        $rooms = $this->roomRepo->getVacantRooms();
+        $sanitized = array_map([$this, 'sanitizeRoom'], $rooms);
+        return ['success' => true, 'data' => $sanitized];
     }
 
     public function transferTenant($fromRoomId, $toRoomId) {
@@ -83,11 +101,11 @@ class RoomService {
             $nextMonth = date('Y-m-d', strtotime('+1 month'));
 
             // 1. Close any active billing cycle in the OLD room
-            $stmt = $this->conn->prepare("UPDATE billing_cycles SET status = 'completed', cycle_end = NOW(), due_date = DATE_ADD(NOW(), INTERVAL 7 DAY) WHERE room_id = ? AND status = 'active'");
+            $stmt = $this->conn->prepare("UPDATE billing_cycles SET status = 'completed', cycle_end = NOW(), due_date = DATE_ADD(NOW(), INTERVAL 3 DAY) WHERE room_id = ? AND status = 'active'");
             $stmt->execute([$fromRoomId]);
 
             // 2. Close any lingering active billing cycle in the NEW room
-            $stmt = $this->conn->prepare("UPDATE billing_cycles SET status = 'completed', cycle_end = NOW(), due_date = DATE_ADD(NOW(), INTERVAL 7 DAY) WHERE room_id = ? AND status = 'active'");
+            $stmt = $this->conn->prepare("UPDATE billing_cycles SET status = 'completed', cycle_end = NOW(), due_date = DATE_ADD(NOW(), INTERVAL 3 DAY) WHERE room_id = ? AND status = 'active'");
             $stmt->execute([$toRoomId]);
 
             // 3. Create a BRAND NEW billing cycle for the tenant in the NEW room
@@ -172,13 +190,33 @@ class RoomService {
         }
     }
 
-    public function generateNewTenantCode($roomId) {
+    private function generateSecureAccessCode() {
+        return 'WTPD-' . strtoupper(substr(bin2hex(random_bytes(4)), 0, 8)); // e.g. WTPD-A7X9P2QK
+    }
+
+    private function logAccessCodeAction($roomId, $action, $userId = null) {
+        $ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+        try {
+            $stmt = $this->conn->prepare("INSERT INTO access_code_audits (room_id, action, ip_address, user_id) VALUES (?, ?, ?, ?)");
+            $stmt->execute([$roomId, $action, $ip, $userId]);
+        } catch (Exception $e) {}
+    }
+
+    public function generateNewTenantCode($roomId, $userId = null) {
         $room = $this->roomRepo->findById($roomId);
         if (!$room) return ['success' => false, 'message' => 'Room not found'];
 
-        $newCode = 'TC-' . strtoupper(substr(md5(uniqid(rand(), true)), 0, 6));
-        $this->roomRepo->updateTenantCode($roomId, $newCode);
-        return ['success' => true, 'message' => 'New code generated', 'code' => $newCode];
+        require_once __DIR__ . '/../utils/SecurityMiddleware.php';
+        
+        $newCode = $this->generateSecureAccessCode();
+        $hash = SecurityMiddleware::hashAccessCode($newCode);
+        $encrypted = SecurityMiddleware::encryptAccessCode($newCode);
+        $masked = SecurityMiddleware::maskAccessCode($newCode);
+
+        $this->roomRepo->updateTenantCodeSecure($roomId, $hash, $encrypted, $masked);
+        $this->logAccessCodeAction($roomId, 'Generated', $userId);
+        
+        return ['success' => true, 'message' => 'New code generated', 'data' => ['tenant_code' => $newCode]];
     }
 
     public function addRoom($data) {
@@ -191,7 +229,15 @@ class RoomService {
             return ['success' => false, 'message' => 'Room number already exists.'];
         }
 
+        require_once __DIR__ . '/../utils/SecurityMiddleware.php';
+        $newCode = $this->generateSecureAccessCode();
+        $data['tenant_code_hash'] = SecurityMiddleware::hashAccessCode($newCode);
+        $data['tenant_code_encrypted'] = SecurityMiddleware::encryptAccessCode($newCode);
+        $data['tenant_code_masked'] = SecurityMiddleware::maskAccessCode($newCode);
+
         $this->roomRepo->createRoom($data);
+        $this->logAccessCodeAction($data['room_id'], 'Generated');
+
         return ['success' => true, 'message' => 'Room added successfully.'];
     }
 
@@ -229,15 +275,28 @@ class RoomService {
         return ['success' => true, 'message' => 'Room restored successfully.'];
     }
 
-    public function saveTenantInvitation($email, $roomId, $tenantCode) {
-        $this->invitationRepo->saveInvitation($email, $roomId, $tenantCode);
+    public function saveTenantInvitation($email, $roomId) {
+        $room = $this->roomRepo->findById($roomId);
+        if (!$room) {
+            return ['success' => false, 'message' => 'Room not found.'];
+        }
+
+        if (empty($room['tenant_code_encrypted'])) {
+            return ['success' => false, 'message' => 'No access code generated for this room. Please regenerate the code first.'];
+        }
+
+        require_once __DIR__ . '/../utils/SecurityMiddleware.php';
+        $decryptedCode = SecurityMiddleware::decryptAccessCode($room['tenant_code_encrypted']);
+
+        // Save to invitations using the exact same secure fields from the room
+        $this->invitationRepo->saveInvitationSecure($email, $roomId, $room['tenant_code_hash'], $room['tenant_code_encrypted'], $room['tenant_code_masked']);
         
         require_once __DIR__ . '/../utils/email_service.php';
-        $emailResult = sendAccessCodeEmail($this->conn, $email, $tenantCode, $roomId);
+        $emailResult = sendAccessCodeEmail($this->conn, $email, $decryptedCode, $roomId);
 
         if ($emailResult['success']) {
-            $room = $this->roomRepo->findById($roomId);
-            if ($room && $room['status'] === 'vacant') {
+            $this->logAccessCodeAction($roomId, 'Sent');
+            if ($room['status'] === 'vacant') {
                 $this->roomRepo->updateStatus($roomId, 'on_process', null, null);
             }
             return [
@@ -254,8 +313,6 @@ class RoomService {
     }
 
     public function getTenantInvitationByEmail($email) {
-        $invitation = $this->invitationRepo->findPendingByEmailAndCode($email, null); // Code null to find any pending
-        // Wait, the findPendingByEmailAndCode requires code. Let's add a generic one.
         $stmt = $this->conn->prepare("SELECT * FROM invitations WHERE email = ? AND status = 'pending' LIMIT 1");
         $stmt->execute([$email]);
         $invitation = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -266,11 +323,19 @@ class RoomService {
             }
 
             require_once __DIR__ . '/../utils/email_service.php';
-            $emailResult = sendAccessCodeEmail($this->conn, $email, $invitation['tenant_code'], $invitation['room_id']);
+            require_once __DIR__ . '/../utils/SecurityMiddleware.php';
+            $decryptedCode = SecurityMiddleware::decryptAccessCode($invitation['tenant_code_encrypted']);
+
+            $emailResult = sendAccessCodeEmail($this->conn, $email, $decryptedCode, $invitation['room_id']);
 
             if ($emailResult['success']) {
                 $this->invitationRepo->updateExpiry($email, 5);
                 $invitation['expires_at'] = date('Y-m-d H:i:s', time() + 300);
+                
+                // Hide encrypted data from frontend
+                unset($invitation['tenant_code_hash']);
+                unset($invitation['tenant_code_encrypted']);
+
                 return ['success' => true, 'message' => "Access code sent to your email", 'data' => $invitation];
             } else {
                 return ['success' => false, 'message' => "Failed to send email: " . $emailResult['message']];

@@ -217,40 +217,13 @@ class PaymentController {
     }
 
     public function processPenalties($data) {
-        // In a real production app, this would be a secured CRON job endpoint.
-        // It calculates a flat 2% daily penalty for any overdue unpaid billing cycles.
+        // Delegates to the PenaltyService for centralized penalty logic.
+        // Applies a one-time flat penalty (configurable %) for any unpaid cycle past due date.
         
-        try {
-            $this->db->beginTransaction();
-
-            // 1. Find all cycles that are past due_date and unpaid/overdue
-            $stmt = $this->db->query("SELECT id, total_cost, due_date FROM billing_cycles WHERE (payment_status = 'unpaid' OR payment_status = 'overdue') AND due_date < NOW()");
-            $overdueCycles = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-            $processedCount = 0;
-            foreach ($overdueCycles as $cycle) {
-                // Calculate days late
-                $dueDate = new DateTime($cycle['due_date']);
-                $today = new DateTime();
-                $daysLate = $today->diff($dueDate)->days;
-
-                if ($daysLate > 0) {
-                    // 2% of original total_cost per day late
-                    $dailyPenalty = $cycle['total_cost'] * 0.02;
-                    $totalPenalty = $dailyPenalty * $daysLate;
-
-                    $updateStmt = $this->db->prepare("UPDATE billing_cycles SET payment_status = 'overdue', penalty_amount = ? WHERE id = ?");
-                    $updateStmt->execute([$totalPenalty, $cycle['id']]);
-                    $processedCount++;
-                }
-            }
-
-            $this->db->commit();
-            echo json_encode(["success" => true, "message" => "Processed penalties for $processedCount overdue invoices."]);
-        } catch (Exception $e) {
-            $this->db->rollBack();
-            echo json_encode(["success" => false, "message" => "Failed to process penalties: " . $e->getMessage()]);
-        }
+        require_once __DIR__ . '/../services/PenaltyService.php';
+        $penaltySvc = new PenaltyService($this->db);
+        $result = $penaltySvc->calculateDailyPenalties();
+        echo json_encode($result);
     }
 
     public function submitOfflinePayment($authenticatedUser, $data) {

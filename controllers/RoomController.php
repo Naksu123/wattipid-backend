@@ -88,7 +88,7 @@ class RoomController {
         if ($authenticatedUser['role'] !== 'landlord') {
             ResponseHelper::error("Forbidden", 403);
         }
-        $result = $this->roomService->saveTenantInvitation($data['email'], $data['roomId'], $data['tenantCode']);
+        $result = $this->roomService->saveTenantInvitation($data['email'], $data['roomId']);
         ResponseHelper::sendRaw($result);
     }
 

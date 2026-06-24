@@ -200,12 +200,19 @@ function storeOTP($conn, $email, $otp, $type = 'verification') {
 }
 
 function validateOTP($conn, $email, $otp, $type = 'verification') {
-    $stmt = $conn->prepare("SELECT * FROM email_otps WHERE email = ? AND type = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1");
+    $stmt = $conn->prepare("SELECT * FROM email_otps WHERE email = ? AND type = ? ORDER BY created_at DESC LIMIT 1");
     $stmt->execute([$email, $type]);
     $record = $stmt->fetch();
 
     if (!$record) {
         return ['success' => false, 'message' => 'No verification code found.', 'status' => 'not_found'];
+    }
+    
+    if ($record['status'] !== 'pending') {
+        if ($record['status'] === 'expired') return ['success' => false, 'message' => 'Verification code has expired.', 'status' => 'expired'];
+        if ($record['status'] === 'locked') return ['success' => false, 'message' => 'Too many failed attempts.', 'status' => 'locked'];
+        if ($record['status'] === 'used') return ['success' => false, 'message' => 'This code has already been used.', 'status' => 'used'];
+        return ['success' => false, 'message' => 'Verification code is invalid.', 'status' => 'invalidated'];
     }
 
     if (strtotime($record['expires_at']) < time()) {
@@ -260,12 +267,15 @@ function checkOTPRateLimit($conn, $email) {
 // ============ EMAIL TEMPLATES ============
 
 function getOTPEmailTemplate($recipientName, $otpCode, $type = 'verification') {
-    $title = $type === 'access_code' ? 'Your Wattipid Access Code' : 'Verify Your Email';
-    $subtitle = $type === 'access_code'
-        ? 'Your landlord has invited you to join Wattipid. Use the code below to complete your registration.'
-        : 'Enter the code below to verify your email address and complete your registration.';
-
-    $expiryText = OTP_EXPIRY_MINUTES . ' minutes';
+    if ($type === 'access_code') {
+        $title = 'Wattipid Room Access Code';
+        $subtitle = 'Welcome to Wattipid Smart Electricity Monitoring System.<br>Your room has been successfully registered.<br>Use the access code below to complete your account registration.';
+        $footerText = 'Important: Keep this code private. Do not share it with anyone.';
+    } else {
+        $title = 'Verify Your Email';
+        $subtitle = 'Enter the code below to verify your email address and complete your registration.';
+        $footerText = '⏱ Expires in ' . OTP_EXPIRY_MINUTES . ' minutes';
+    }
 
     return <<<HTML
 <!DOCTYPE html>
@@ -286,7 +296,7 @@ function getOTPEmailTemplate($recipientName, $otpCode, $type = 'verification') {
                             <div style="background:#22c55e; color:white; padding:20px; font-size:32px; font-weight:bold; letter-spacing:8px; border-radius:12px; margin:20px 0;">
                                 {$otpCode}
                             </div>
-                            <p style="color:#f59e0b;">⏱ Expires in {$expiryText}</p>
+                            <p style="color:#f59e0b;">{$footerText}</p>
                         </td>
                     </tr>
                 </table>
@@ -299,8 +309,10 @@ HTML;
 }
 
 function getOTPEmailPlainText($recipientName, $otpCode, $type = 'verification') {
-    $title = $type === 'access_code' ? 'Wattipid Access Code' : 'Wattipid Email Verification';
-    return "{$title}\n\nYour code is: {$otpCode}\n\nExpires in " . OTP_EXPIRY_MINUTES . " minutes.";
+    if ($type === 'access_code') {
+        return "Wattipid Room Access Code\n\nWelcome to Wattipid Smart Electricity Monitoring System.\nYour room has been successfully registered.\nUse the access code below to complete your account registration.\n\nAccess Code: {$otpCode}\n\nImportant: Keep this code private. Do not share it with anyone.";
+    }
+    return "Wattipid Email Verification\n\nYour code is: {$otpCode}\n\nExpires in " . OTP_EXPIRY_MINUTES . " minutes.";
 }
 
 // ============ HIGH-LEVEL SEND FUNCTIONS ============
@@ -318,9 +330,9 @@ function sendVerificationOTP($conn, $email, $tenantName = '') {
     $htmlBody = getOTPEmailTemplate($tenantName ?: $email, $otp, 'verification');
     $textBody = getOTPEmailPlainText($tenantName ?: $email, $otp, 'verification');
 
-    $result = queueEmail($conn, $email, $tenantName, $subject, $htmlBody, $textBody);
+    $result = sendEmail($email, $tenantName, $subject, $htmlBody, $textBody);
 
-    return ['success' => $result, 'message' => 'Verification email queued.'];
+    return ['success' => $result['success'], 'message' => $result['success'] ? 'Verification email sent.' : $result['message']];
 }
 
 function sendAccessCodeEmail($conn, $email, $accessCode, $roomId) {
@@ -328,9 +340,9 @@ function sendAccessCodeEmail($conn, $email, $accessCode, $roomId) {
     $htmlBody = getOTPEmailTemplate($email, $accessCode, 'access_code');
     $textBody = getOTPEmailPlainText($email, $accessCode, 'access_code');
 
-    $result = queueEmail($conn, $email, '', $subject, $htmlBody, $textBody);
+    $result = sendEmail($email, '', $subject, $htmlBody, $textBody);
 
-    return ['success' => $result, 'message' => 'Access code email queued.'];
+    return ['success' => $result['success'], 'message' => $result['success'] ? 'Access code email sent.' : $result['message']];
 }
 
 function logEmailDelivery($conn, $email, $type, $status, $provider, $errorMessage = null) {

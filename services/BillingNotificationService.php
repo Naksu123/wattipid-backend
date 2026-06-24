@@ -187,21 +187,17 @@ class BillingNotificationService {
         $totalDue = (float) $cycle['total_cost'] + (float) ($cycle['penalty_amount'] ?? 0);
 
         $reminders = [
-            ['days' => 7, 'type' => 'due_date_7d',
-             'title' => '📅 Bill Due in 7 Days',
-             'message' => "Your electricity bill of ₱" . number_format($totalDue, 2) . " is due in 7 days (" . $dueDate->format('M j, Y') . ").",
-             'severity' => 'info'],
-            ['days' => 3, 'type' => 'due_date_3d',
-             'title' => '📅 Bill Due in 3 Days',
-             'message' => "Reminder: Your electricity bill of ₱" . number_format($totalDue, 2) . " is due in 3 days (" . $dueDate->format('M j, Y') . ").",
+            ['days' => 2, 'type' => 'due_date_2d',
+             'title' => '📅 Bill Due in 2 Days',
+             'message' => "Reminder: Your electricity bill of ₱" . number_format($totalDue, 2) . " is due in 2 days (" . $dueDate->format('M j, Y') . "). Please settle your payment to avoid penalties.",
              'severity' => 'warning'],
             ['days' => 1, 'type' => 'due_date_1d',
              'title' => '⚠️ Bill Due Tomorrow',
-             'message' => "Your electricity bill of ₱" . number_format($totalDue, 2) . " is due tomorrow (" . $dueDate->format('M j, Y') . ").",
+             'message' => "Your electricity bill of ₱" . number_format($totalDue, 2) . " is due tomorrow (" . $dueDate->format('M j, Y') . "). Pay now to avoid automatic penalties.",
              'severity' => 'warning'],
             ['days' => 0, 'type' => 'due_date_today',
              'title' => '🚨 Bill Due Today',
-             'message' => "Your electricity bill of ₱" . number_format($totalDue, 2) . " is due today. Please submit payment to avoid penalties.",
+             'message' => "Your electricity bill of ₱" . number_format($totalDue, 2) . " is due today. Please submit payment immediately to avoid penalties.",
              'severity' => 'critical'],
         ];
 

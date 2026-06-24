@@ -58,32 +58,25 @@ class DashboardService {
     public function getBillingCycleData($roomId, $userId, $role) {
         $id = $this->resolveIdentifier($roomId, $userId, $role);
         
-        // Landlords querying a room need to find the tenant for that room to get their billing dates
-        if ($role === 'landlord') {
-            $tenant = $this->userRepo->findTenantByRoom($roomId);
-            if (!$tenant) return ['success' => false, 'message' => 'No tenant found for this room'];
-            $fullUser = $this->userRepo->findById($tenant['id']);
-        } else {
-            $fullUser = $this->userRepo->findById($userId);
+        require_once __DIR__ . '/BillingCycleService.php';
+        $billingService = new BillingCycleService($this->conn);
+        $billingService->advanceCycleIfNeeded($id['value']);
+        
+        $stmt = $this->conn->prepare("SELECT cycle_start, cycle_end FROM billing_cycles WHERE room_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1");
+        $stmt->execute([$id['value']]);
+        $activeCycle = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$activeCycle) {
+            return ['success' => true, 'data' => null, 'message' => 'Billing cycle not initialized'];
         }
         
-        if (!$fullUser || !$fullUser['billing_start_date'] || !$fullUser['billing_end_date']) {
-            return ['success' => false, 'message' => 'Billing cycle not initialized'];
-        }
-
-        $fullUser = $this->checkAndResetBillingCycle($fullUser);
-        
-        $start = $fullUser['billing_start_date'] . ' 00:00:00';
-        $end = $fullUser['billing_end_date'] . ' 00:00:00';
-        
-        $consumption = $this->dashboardRepo->getTotalConsumption($id['column'], $id['value'], $start, $end);
+        $consumption = $this->dashboardRepo->getTotalConsumption($id['column'], $id['value'], $activeCycle['cycle_start'], $activeCycle['cycle_end']);
         
         return [
             'success' => true,
             'data' => [
-                'billing_start_date' => $fullUser['billing_start_date'],
-                'billing_end_date' => $fullUser['billing_end_date'],
-                'move_in_date' => $fullUser['move_in_date'],
+                'cycle_start' => $activeCycle['cycle_start'],
+                'cycle_end' => $activeCycle['cycle_end'],
                 'consumption' => $consumption
             ]
         ];
@@ -324,7 +317,7 @@ class DashboardService {
     public function getAvailableBillingCycles($roomId, $userId, $role) {
         $id = $this->resolveIdentifier($roomId, $userId, $role);
         
-        $stmt = $this->conn->prepare("SELECT id, invoice_number, cycle_start, cycle_end, total_kwh, total_cost, penalty_amount, status, payment_status, due_date FROM billing_cycles WHERE room_id = ? ORDER BY cycle_start DESC LIMIT 24");
+        $stmt = $this->conn->prepare("SELECT * FROM billing_cycles WHERE room_id = ? ORDER BY cycle_start DESC LIMIT 24");
         $stmt->execute([$id['value']]);
         $cycles = $stmt->fetchAll(PDO::FETCH_ASSOC);
         

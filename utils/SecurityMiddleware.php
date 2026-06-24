@@ -142,5 +142,40 @@ class SecurityMiddleware
 
         return true;
     }
-}
 
+    /**
+     * Secure Access Code Management Functions
+     */
+    
+    // Hash code for database lookup using HMAC-SHA256
+    public static function hashAccessCode($code) {
+        return hash_hmac('sha256', $code, SECRET_KEY);
+    }
+
+    // Encrypt code using AES-256-CBC for storage
+    public static function encryptAccessCode($code) {
+        $method = 'aes-256-cbc';
+        $ivLength = openssl_cipher_iv_length($method);
+        $iv = openssl_random_pseudo_bytes($ivLength);
+        $encrypted = openssl_encrypt($code, $method, SECRET_KEY, 0, $iv);
+        return base64_encode($iv . $encrypted);
+    }
+
+    // Decrypt code when resending email
+    public static function decryptAccessCode($encryptedCode) {
+        $method = 'aes-256-cbc';
+        $ivLength = openssl_cipher_iv_length($method);
+        $data = base64_decode($encryptedCode);
+        $iv = substr($data, 0, $ivLength);
+        $encrypted = substr($data, $ivLength);
+        return openssl_decrypt($encrypted, $method, SECRET_KEY, 0, $iv);
+    }
+
+    // Generate masked code for frontend display
+    public static function maskAccessCode($code) {
+        if (strlen($code) <= 5) return str_repeat('*', strlen($code));
+        $first = substr($code, 0, 3);
+        $last = substr($code, -2);
+        return $first . '*****' . $last;
+    }
+}
