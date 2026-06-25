@@ -52,7 +52,12 @@ class QueueService {
     }
 
     public function markFailed($jobId, $error) {
-        $stmt = $this->conn->prepare("UPDATE jobs SET status = 'failed', error_log = ? WHERE id = ?");
+        $stmt = $this->conn->prepare("
+            UPDATE jobs 
+            SET error_log = ?, 
+                status = CASE WHEN attempts >= max_attempts THEN 'failed' ELSE 'pending' END 
+            WHERE id = ?
+        ");
         $stmt->execute([$error, $jobId]);
     }
 }

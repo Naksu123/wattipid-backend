@@ -212,7 +212,7 @@ class NotificationEngine {
      */
     public function sendPushNotification($userId, $alert) {
         $tokens = $this->getActiveTokens($userId);
-        if (empty($tokens)) return false;
+        if (empty($tokens)) return true; // Successfully skipped because user has no registered devices
 
         $messages = [];
         foreach ($tokens as $token) {
@@ -266,8 +266,9 @@ class NotificationEngine {
             return true;
         }
 
-        error_log("Expo Push failed (HTTP $httpCode): $result");
-        return false;
+        $curlError = curl_error($ch);
+        error_log("Expo Push failed (HTTP $httpCode): $result. cURL Error: $curlError");
+        throw new Exception("Expo Push failed (HTTP $httpCode): $result. cURL Error: $curlError");
     }
 
     // ---- DATA HELPERS ----
@@ -405,17 +406,17 @@ class NotificationEngine {
             $now = new DateTime();
             $diffMinutes = ($now->getTimestamp() - $lastSent->getTimestamp()) / 60;
             if ($diffMinutes < self::COOLDOWN_MINUTES) return false;
-
-            // Check daily cap (across ALL alert types)
-            $dailyStmt = $this->conn->prepare("
-                SELECT COALESCE(SUM(daily_count), 0) as total
-                FROM notification_cooldowns
-                WHERE user_id = ? AND count_date = CURDATE()
-            ");
-            $dailyStmt->execute([$userId]);
-            $dailyTotal = (int) $dailyStmt->fetchColumn();
-            if ($dailyTotal >= self::DAILY_CAP) return false;
         }
+
+        // Check daily cap (across ALL alert types)
+        $dailyStmt = $this->conn->prepare("
+            SELECT COALESCE(SUM(daily_count), 0) as total
+            FROM notification_cooldowns
+            WHERE user_id = ? AND count_date = CURDATE()
+        ");
+        $dailyStmt->execute([$userId]);
+        $dailyTotal = (int) $dailyStmt->fetchColumn();
+        if ($dailyTotal >= self::DAILY_CAP) return false;
 
         return true;
     }

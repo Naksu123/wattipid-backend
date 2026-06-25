@@ -23,6 +23,7 @@ class UserService {
     }
 
     public function updatePushToken($userId, $token) {
+        // Update device_tokens table (supports multiple devices)
         $stmt = $this->userRepo->conn->prepare("
             INSERT INTO device_tokens (user_id, expo_push_token, device_name, platform, is_active, last_active)
             VALUES (?, ?, 'React Native App', 'cross-platform', 1, NOW())
@@ -32,6 +33,13 @@ class UserService {
                 last_active = NOW()
         ");
         $stmt->execute([$userId, $token]);
+
+        // Update users table (legacy support for notification_engine.php)
+        $stmt2 = $this->userRepo->conn->prepare("
+            UPDATE users SET expo_push_token = ? WHERE id = ?
+        ");
+        $stmt2->execute([$token, $userId]);
+
         return ['success' => true];
     }
 }

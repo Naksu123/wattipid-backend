@@ -72,12 +72,17 @@ class DashboardService {
         
         $consumption = $this->dashboardRepo->getTotalConsumption($id['column'], $id['value'], $activeCycle['cycle_start'], $activeCycle['cycle_end']);
         
+        require_once __DIR__ . '/BudgetService.php';
+        $budgetService = new BudgetService($this->conn);
+        $budgetRes = $budgetService->getBudget($id['value'], (int)date('m'), (int)date('Y'));
+        
         return [
             'success' => true,
             'data' => [
                 'cycle_start' => $activeCycle['cycle_start'],
                 'cycle_end' => $activeCycle['cycle_end'],
-                'consumption' => $consumption
+                'consumption' => $consumption,
+                'budget' => $budgetRes['data'] ?? null
             ]
         ];
     }

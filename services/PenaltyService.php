@@ -61,28 +61,30 @@ class PenaltyService {
      * - One-time flat penalty (configurable %, default 2%)
      * - Updates billing status, grand_total, and triggers notifications
      */
-    public function calculateDailyPenalties() {
-        // Prevent running multiple times a day
+    public function calculateDailyPenalties($force = false) {
         $settings = $this->getPenaltySettings();
-        $stmt = $this->conn->query("SELECT setting_value FROM settings WHERE setting_key = 'last_penalty_run_date'");
-        $lastRun = $stmt->fetchColumn();
         $today = date('Y-m-d');
         
-        if ($lastRun === $today) {
-            return ['success' => true, 'message' => 'Penalties already calculated today.', 'count' => 0];
+        if (!$force) {
+            $stmt = $this->conn->query("SELECT setting_value FROM settings WHERE setting_key = 'last_penalty_run_date'");
+            $lastRun = $stmt->fetchColumn();
+            if ($lastRun === $today) {
+                return ['success' => true, 'message' => 'Penalties already calculated today.', 'count' => 0];
+            }
         }
 
-        $penaltyRate = (float)($settings['penalty_rate'] ?? 2.00); // Default 2% of total billing
+        $penaltyRate = (float)($settings['penalty_rate'] ?? 2.00); 
+        $maxPenalty = (float)($settings['maximum_penalty_limit'] ?? 1000.00);
+        $autoEmail = (int)($settings['auto_email_penalties'] ?? 1);
+        $autoPush = (int)($settings['auto_push_penalties'] ?? 1);
 
         try {
             $this->conn->beginTransaction();
 
-            // Find all unpaid cycles where due_date has passed (NO grace period)
-            // Only target cycles that haven't already been penalized
             $sql = "SELECT bc.*, u.id as user_id, u.email as tenant_email 
                     FROM billing_cycles bc 
                     LEFT JOIN users u ON u.room_id = bc.room_id AND u.role = 'tenant'
-                    WHERE bc.payment_status IN ('unpaid', 'partially_paid')
+                    WHERE bc.payment_status IN ('unpaid', 'partially_paid', 'overdue')
                     AND bc.due_date IS NOT NULL 
                     AND bc.due_date < NOW()
                     AND bc.status = 'completed'";
@@ -93,60 +95,65 @@ class PenaltyService {
 
             $penaltiesApplied = 0;
             $updateCycleStmt = $this->conn->prepare(
-                "UPDATE billing_cycles SET payment_status = 'overdue', penalty_amount = ?, grand_total = grand_total + ? WHERE id = ?"
+                "UPDATE billing_cycles SET payment_status = 'overdue', penalty_amount = penalty_amount + ?, grand_total = grand_total + ? WHERE id = ?"
             );
             $logStmt = $this->conn->prepare(
-                "INSERT INTO penalty_history (billing_cycle_id, room_id, tenant_name, original_balance, penalty_amount, penalty_type) VALUES (?, ?, ?, ?, ?, ?)"
+                "INSERT INTO penalty_history (billing_cycle_id, room_id, tenant_id, tenant_name, original_balance, penalty_amount, penalty_type, days_overdue, penalty_rate, running_total_penalty, current_outstanding_balance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             );
 
             $queue = new QueueService($this->conn);
 
             foreach ($overdueCycles as $cycle) {
-                // Calculate one-time flat penalty
-                $originalBalance = (float)$cycle['total_cost'];
-                $penaltyAmount = round($originalBalance * ($penaltyRate / 100), 2);
+                // Ensure exact days calculation (truncating time)
+                $daysOverdueStmt = $this->conn->prepare("SELECT DATEDIFF(DATE(NOW()), DATE(?)) as days");
+                $daysOverdueStmt->execute([$cycle['due_date']]);
+                $daysOverdue = max(1, (int)$daysOverdueStmt->fetchColumn());
 
-                if ($penaltyAmount > 0) {
-                    $updateCycleStmt->execute([$penaltyAmount, $penaltyAmount, $cycle['id']]);
+                $originalBalance = (float)$cycle['total_cost'];
+                
+                // Deterministic formula: (Original * Rate) rounded, THEN multiplied by Days
+                // This guarantees UI consistency: Daily Penalty * Days Overdue = Total Penalty
+                $dailyPenaltyAmount = round($originalBalance * ($penaltyRate / 100), 2);
+                $expectedTotalPenalty = $dailyPenaltyAmount * $daysOverdue;
+                $currentPenaltyAccumulated = (float)$cycle['penalty_amount'];
+
+                if ($maxPenalty > 0 && $expectedTotalPenalty > $maxPenalty) {
+                    $expectedTotalPenalty = $maxPenalty;
+                }
+
+                $difference = round($expectedTotalPenalty - $currentPenaltyAccumulated, 2);
+
+                if ($difference > 0) {
+                    $updateCycleStmt->execute([$difference, $difference, $cycle['id']]);
+                    
+                    $newTotalPenalty = $expectedTotalPenalty;
+                    $totalOutstanding = $originalBalance + $newTotalPenalty;
+
                     $logStmt->execute([
                         $cycle['id'], 
                         $cycle['room_id'], 
+                        $cycle['user_id'] ?? null,
                         $cycle['tenant_name'], 
                         $originalBalance, 
-                        $penaltyAmount, 
-                        'percentage'
+                        $difference, 
+                        'percentage_daily',
+                        $daysOverdue,
+                        $penaltyRate,
+                        $newTotalPenalty,
+                        $totalOutstanding
                     ]);
                     $penaltiesApplied++;
 
-                    // Queue overdue + penalty notification emails
-                    $totalOutstanding = $originalBalance + $penaltyAmount;
-                    $dueDateStr = date('M j, Y', strtotime($cycle['due_date']));
-
-                    if (!empty($cycle['tenant_email'])) {
-                        // 1. Overdue Notice Email
-                        $overdueSubject = "Overdue Notice - Wattipid Electricity Bill";
-                        $overdueBody = $this->getOverdueEmailTemplate(
-                            $cycle['tenant_name'] ?? 'Tenant',
-                            $cycle['room_id'],
-                            $dueDateStr,
-                            $originalBalance
-                        );
-                        $queue->push('email', [
-                            'to' => $cycle['tenant_email'],
-                            'name' => $cycle['tenant_name'] ?? '',
-                            'subject' => $overdueSubject,
-                            'htmlBody' => $overdueBody,
-                            'textBody' => ''
-                        ]);
-
-                        // 2. Penalty Applied Email
-                        $penaltySubject = "Penalty Applied to Your Wattipid Account";
+                    if ($autoEmail && !empty($cycle['tenant_email'])) {
+                        $penaltySubject = "Daily Penalty Notice - Wattipid Account";
                         $penaltyBody = $this->getPenaltyEmailTemplate(
                             $cycle['tenant_name'] ?? 'Tenant',
                             $cycle['room_id'],
                             $originalBalance,
-                            $penaltyAmount,
-                            $totalOutstanding
+                            $totalOutstanding,
+                            $dailyPenaltyAmount,
+                            $newTotalPenalty,
+                            $daysOverdue
                         );
                         $queue->push('email', [
                             'to' => $cycle['tenant_email'],
@@ -157,8 +164,7 @@ class PenaltyService {
                         ]);
                     }
 
-                    // 3. In-app notification for tenant
-                    if (!empty($cycle['user_id'])) {
+                    if ($autoPush && !empty($cycle['user_id'])) {
                         $notifStmt = $this->conn->prepare(
                             "INSERT INTO notification_history (user_id, room_id, type, category, severity, title, message, data_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
                         );
@@ -168,24 +174,27 @@ class PenaltyService {
                             'penalty_applied',
                             'penalty',
                             'critical',
-                            '⚠️ Penalty Applied to Your Account',
-                            "Your electricity bill of ₱" . number_format($originalBalance, 2) . " has exceeded the 3-day payment period. A penalty of ₱" . number_format($penaltyAmount, 2) . " has been applied. Total outstanding: ₱" . number_format($totalOutstanding, 2) . ".",
+                            '⚠️ Daily Penalty Applied',
+                            "Your bill remains overdue by $daysOverdue days. A daily penalty of ₱" . number_format($dailyPenaltyAmount, 2) . " was added. Total outstanding: ₱" . number_format($totalOutstanding, 2) . ".",
                             json_encode([
                                 'billing_cycle_id' => $cycle['id'],
                                 'original_amount' => $originalBalance,
-                                'penalty_amount' => $penaltyAmount,
-                                'total_outstanding' => $totalOutstanding
+                                'daily_penalty' => $dailyPenaltyAmount,
+                                'total_penalty' => $newTotalPenalty,
+                                'total_outstanding' => $totalOutstanding,
+                                'days_overdue' => $daysOverdue
                             ])
                         ]);
                     }
                 }
             }
 
-            // Update last run date
-            $this->conn->prepare("UPDATE settings SET setting_value = ? WHERE setting_key = 'last_penalty_run_date'")->execute([$today]);
+            if (!$force) {
+                $this->conn->prepare("UPDATE settings SET setting_value = ? WHERE setting_key = 'last_penalty_run_date'")->execute([$today]);
+            }
 
             $this->conn->commit();
-            return ['success' => true, 'message' => "Successfully applied penalties to $penaltiesApplied accounts.", 'count' => $penaltiesApplied];
+            return ['success' => true, 'message' => "Successfully applied daily penalties to $penaltiesApplied accounts.", 'count' => $penaltiesApplied];
         } catch (Exception $e) {
             if ($this->conn->inTransaction()) $this->conn->rollBack();
             return ['success' => false, 'message' => 'Failed to calculate penalties: ' . $e->getMessage()];
@@ -254,10 +263,11 @@ class PenaltyService {
 HTML;
     }
 
-    private function getPenaltyEmailTemplate($tenantName, $roomId, $originalAmount, $penaltyAmount, $totalOutstanding) {
+    private function getPenaltyEmailTemplate($tenantName, $roomId, $originalAmount, $currentBalance, $penaltyToday, $totalPenalty, $daysOverdue) {
         $fmtOriginal = number_format($originalAmount, 2);
-        $fmtPenalty = number_format($penaltyAmount, 2);
-        $fmtTotal = number_format($totalOutstanding, 2);
+        $fmtCurrent = number_format($currentBalance, 2);
+        $fmtPenaltyToday = number_format($penaltyToday, 2);
+        $fmtTotalPenalty = number_format($totalPenalty, 2);
         
         return <<<HTML
 <!DOCTYPE html>
@@ -269,24 +279,28 @@ HTML;
             <table width="100%" style="max-width:480px; background:#111827; border-radius:16px; border:1px solid #EF4444;">
                 <tr><td style="padding:32px; text-align:center;">
                     <div style="font-size:48px; margin-bottom:16px;">⚠️</div>
-                    <h1 style="color:#EF4444; font-size:22px; margin-bottom:8px;">Penalty Applied</h1>
+                    <h1 style="color:#EF4444; font-size:22px; margin-bottom:8px;">Daily Penalty Notice</h1>
                     <p style="color:#9ca3af; font-size:14px;">Hi {$tenantName},</p>
-                    <p style="color:#9ca3af; font-size:14px;">Your electricity bill has exceeded the 3-day payment period. A penalty has been applied to your account.</p>
+                    <p style="color:#9ca3af; font-size:14px;">Your electricity bill remains unpaid for <strong style="color:#EF4444;">{$daysOverdue} days</strong>. A daily penalty has been added to your account.</p>
                     <div style="background:rgba(239,68,68,0.05); border:1px solid rgba(239,68,68,0.2); border-radius:12px; padding:20px; margin:20px 0; text-align:left;">
                         <div style="display:flex; justify-content:space-between; margin-bottom:12px; border-bottom:1px solid rgba(255,255,255,0.05); padding-bottom:12px;">
-                            <span style="color:#9ca3af; font-size:13px;">Original Amount Due</span>
+                            <span style="color:#9ca3af; font-size:13px;">Original Amount</span>
                             <span style="color:#fff; font-size:14px; font-weight:600;">₱{$fmtOriginal}</span>
                         </div>
                         <div style="display:flex; justify-content:space-between; margin-bottom:12px; border-bottom:1px solid rgba(255,255,255,0.05); padding-bottom:12px;">
-                            <span style="color:#EF4444; font-size:13px;">Penalty Amount</span>
-                            <span style="color:#EF4444; font-size:14px; font-weight:700;">+ ₱{$fmtPenalty}</span>
+                            <span style="color:#EF4444; font-size:13px;">Penalty Added Today</span>
+                            <span style="color:#EF4444; font-size:14px; font-weight:700;">+ ₱{$fmtPenaltyToday}</span>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; margin-bottom:12px; border-bottom:1px solid rgba(255,255,255,0.05); padding-bottom:12px;">
+                            <span style="color:#9ca3af; font-size:13px;">Total Penalty Accumulated</span>
+                            <span style="color:#EF4444; font-size:14px; font-weight:700;">₱{$fmtTotalPenalty}</span>
                         </div>
                         <div style="display:flex; justify-content:space-between;">
-                            <span style="color:#fff; font-size:14px; font-weight:700;">Total Outstanding</span>
-                            <span style="color:#EF4444; font-size:18px; font-weight:800;">₱{$fmtTotal}</span>
+                            <span style="color:#fff; font-size:14px; font-weight:700;">Current Balance</span>
+                            <span style="color:#EF4444; font-size:18px; font-weight:800;">₱{$fmtCurrent}</span>
                         </div>
                     </div>
-                    <p style="color:#9ca3af; font-size:13px;">Please settle your outstanding balance immediately to avoid further charges.</p>
+                    <p style="color:#9ca3af; font-size:13px;">Please settle your balance immediately to avoid additional daily charges.</p>
                 </td></tr>
             </table>
         </td></tr>
