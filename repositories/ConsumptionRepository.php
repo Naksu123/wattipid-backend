@@ -7,7 +7,7 @@ class ConsumptionRepository {
     }
 
     public function getLastLog($roomId) {
-        $stmt = $this->conn->prepare("SELECT timestamp, energy_cumulative FROM consumption_logs WHERE room_id = ? ORDER BY timestamp DESC LIMIT 1");
+        $stmt = $this->conn->prepare("SELECT timestamp, energy_cumulative FROM consumption_logs WHERE room_id = ? ORDER BY id DESC LIMIT 1");
         $stmt->execute([$roomId]);
         return $stmt->fetch(PDO::FETCH_ASSOC);
     }

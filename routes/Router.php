@@ -267,6 +267,9 @@ class Router {
             case 'getNotificationHistory':
                 $this->notificationController->getNotifications($authenticatedUser, $data);
                 return true;
+            case 'createNotification':
+                $this->notificationController->createNotification($authenticatedUser, $data);
+                return true;
             case 'markNotificationRead':
                 $this->notificationController->markAsRead($data);
                 return true;

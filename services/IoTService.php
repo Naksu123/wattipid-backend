@@ -20,7 +20,7 @@ class IoTService {
     const MIN_REALISTIC_VOLTAGE = 100;        
     const MAX_REALISTIC_CURRENT = 25;         
     const MAX_ENERGY_DELTA = 0.05;            // Max kWh delta per reading (0.05 kWh = 36000W over 5s). Blocks fake jumps!
-    const MIN_LOG_INTERVAL_SECONDS = 3;       // Minimum seconds between logs (anti-spam)
+    const MIN_LOG_INTERVAL_SECONDS = 0;       // Minimum seconds between logs (anti-spam) - Disabled for instant realtime
 
     public function __construct($dbConnection) {
         $this->conn = $dbConnection;
@@ -87,7 +87,13 @@ class IoTService {
 
         // --- Calculate Energy Delta & Cost ---
         $lastCumulative = $lastLog ? (float) $lastLog['energy_cumulative'] : 0;
-        $energyDelta = ($cumulativeEnergy < $lastCumulative) ? $cumulativeEnergy : ($cumulativeEnergy - $lastCumulative);
+        
+        // GHOST FIX: Handle C++ floating point noise. Only assume ESP32 restarted if it drops significantly (> 0.001 kWh)
+        if ($lastCumulative - $cumulativeEnergy > 0.001) {
+            $energyDelta = $cumulativeEnergy;
+        } else {
+            $energyDelta = max(0, $cumulativeEnergy - $lastCumulative);
+        }
         
         // GHOST FIX: Safety cap for energy delta (prevents fake spikes)
         if ($energyDelta > self::MAX_ENERGY_DELTA) {

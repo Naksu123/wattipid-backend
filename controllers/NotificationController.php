@@ -57,6 +57,32 @@ class NotificationController {
         }
     }
 
+    public function createNotification($authenticatedUser, $data) {
+        $userId = $authenticatedUser['id'];
+        $roomId = $data['roomId'] ?? null;
+        $type = $data['type'] ?? 'info';
+        $category = $data['category'] ?? 'system';
+        $severity = $data['severity'] ?? 'info';
+        $title = $data['title'] ?? 'Notification';
+        $message = $data['message'] ?? '';
+        $dataJson = isset($data['data']) ? json_encode($data['data']) : '{}';
+
+        try {
+            if ($this->tableExists('notification_history')) {
+                $stmt = $this->conn->prepare("
+                    INSERT INTO notification_history (user_id, room_id, type, category, severity, title, message, data_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ");
+                $stmt->execute([$userId, $roomId, $type, $category, $severity, $title, $message, $dataJson]);
+                ResponseHelper::sendRaw(['success' => true, 'data' => ['id' => $this->conn->lastInsertId()]]);
+                return;
+            }
+        } catch (Exception $e) {
+            error_log("createNotification error: " . $e->getMessage());
+        }
+        ResponseHelper::sendRaw(['success' => false, 'message' => 'Failed to create notification']);
+    }
+
     public function markAsRead($data) {
         $notifId = $data['notificationId'] ?? $data['id'] ?? null;
         if (!$notifId) {
