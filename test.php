@@ -1,0 +1,1 @@
+<?php require 'c:/xampp/htdocs/wattipid_backend/config/Database.php'; $db = new Database(); $conn = $db->connect(); $stmt = $conn->query('SELECT proof_url FROM payments WHERE status=''pending'' AND proof_url IS NOT NULL LIMIT 1'); $row = $stmt->fetch(); echo substr($row['proof_url'], 0, 100); ?>

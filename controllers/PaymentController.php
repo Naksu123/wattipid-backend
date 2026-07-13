@@ -137,6 +137,11 @@ class PaymentController {
                 $stmt3->execute([$payment['billing_cycle_id']]);
 
                 $this->logAudit($authenticatedUser['id'], 'landlord', 'reject_payment', 'payments', $paymentId, 'pending', 'rejected: ' . $reason);
+
+                // Send Real-time Notification
+                require_once __DIR__ . '/../services/BillingNotificationService.php';
+                $notifSvc = new BillingNotificationService($this->db);
+                $notifSvc->sendPaymentRejectionAlert($payment['room_id'], $payment['tenant_id'], $payment['amount'], $reason);
             }
 
             $this->db->commit();

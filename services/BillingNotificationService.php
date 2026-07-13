@@ -315,9 +315,17 @@ class BillingNotificationService {
         ];
 
         try {
-            $this->conn->beginTransaction();
+            $ownsTransaction = false;
+            if (!$this->conn->inTransaction()) {
+                $this->conn->beginTransaction();
+                $ownsTransaction = true;
+            }
+
             $notifId = $this->saveNotification($userId, $roomId, $alert);
-            $this->conn->commit();
+            
+            if ($ownsTransaction) {
+                $this->conn->commit();
+            }
 
             $alert['id'] = $notifId;
 
@@ -327,8 +335,64 @@ class BillingNotificationService {
 
             return true;
         } catch (Exception $e) {
-            if ($this->conn->inTransaction()) $this->conn->rollBack();
+            if (isset($ownsTransaction) && $ownsTransaction && $this->conn->inTransaction()) {
+                $this->conn->rollBack();
+            }
             error_log("[BillingNotifSvc] Error saving payment alert: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    public function sendPaymentRejectionAlert($roomId, $userId, $amount, $reason) {
+        $settings = $this->getPreferences($userId, $roomId);
+        if (!$settings['notifications_enabled'] || !($settings['payment_alerts'] ?? true)) return false;
+
+        $alert = [
+            'type' => 'payment_rejected',
+            'category' => 'payment',
+            'severity' => 'critical',
+            'title' => '❌ Payment Rejected',
+            'message' => "Your payment of ₱" . number_format($amount, 2) . " has been rejected. Reason: \"$reason\". Please upload a new payment proof.",
+            'data' => [
+                'amount' => $amount,
+                'reason' => $reason
+            ]
+        ];
+
+        try {
+            $ownsTransaction = false;
+            if (!$this->conn->inTransaction()) {
+                $this->conn->beginTransaction();
+                $ownsTransaction = true;
+            }
+            
+            $notifId = $this->saveNotification($userId, $roomId, $alert);
+            
+            if ($ownsTransaction) {
+                $this->conn->commit();
+            }
+
+            $alert['id'] = $notifId;
+
+            if ($settings['push_enabled']) {
+                $this->queuePush($userId, $alert);
+            }
+
+            require_once __DIR__ . '/../utils/QueueService.php';
+            $queue = new QueueService($this->conn);
+            $queue->push('email_notification', [
+                'userId' => $userId,
+                'subject' => 'Payment Rejected',
+                'body' => "Your payment of ₱" . number_format($amount, 2) . " has been rejected.\n\nReason: \"$reason\"\n\nPlease log in to Wattipid and upload a new payment proof.",
+                'template' => 'payment_rejected'
+            ]);
+
+            return true;
+        } catch (Exception $e) {
+            if (isset($ownsTransaction) && $ownsTransaction && $this->conn->inTransaction()) {
+                $this->conn->rollBack();
+            }
+            error_log("[BillingNotifSvc] Error saving payment rejection alert: " . $e->getMessage());
             return false;
         }
     }
