@@ -180,6 +180,8 @@ class Router {
                     $this->dashboardController->getHourlyBreakdown($authenticatedUser, $data);
                 } elseif ($period === 'weekly') {
                     $this->dashboardController->getWeeklyBreakdown($authenticatedUser, $data);
+                } elseif ($period === 'yearly') {
+                    $this->dashboardController->getYearlyBreakdown($authenticatedUser, $data);
                 } else {
                     // For monthly, return daily breakdown for the requested month or current cycle
                     $data['year'] = $data['year'] ?? date('Y');

@@ -170,33 +170,77 @@ class DashboardService {
         return ['success' => true, 'data' => $this->dashboardRepo->getTotalConsumption($id['column'], $id['value'], $start, $end)];
     }
 
-    public function getHourlyBreakdown($roomId, $userId, $role) {
+    public function getHourlyBreakdown($roomId, $userId, $role, $dateStr = null) {
         $id = $this->resolveIdentifier($roomId, $userId, $role);
-        $start = date('Y-m-d 00:00:00');
-        $end = date('Y-m-d 00:00:00', strtotime('+1 day'));
+        if ($dateStr) {
+            $start = date('Y-m-d 00:00:00', strtotime($dateStr));
+            $end = date('Y-m-d 00:00:00', strtotime($start . ' +1 day'));
+        } else {
+            $start = date('Y-m-d 00:00:00');
+            $end = date('Y-m-d 00:00:00', strtotime('+1 day'));
+        }
         return ['success' => true, 'data' => $this->dashboardRepo->getHourlyBreakdown($id['column'], $id['value'], $start, $end)];
     }
 
-    public function getWeeklyBreakdown($roomId, $userId, $role) {
+    public function getWeeklyBreakdown($roomId, $userId, $role, $dateStr = null) {
         $id = $this->resolveIdentifier($roomId, $userId, $role);
         
-        $stmt = $this->conn->prepare("SELECT cycle_start FROM billing_cycles WHERE room_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1");
-        $stmt->execute([$id['value']]);
-        $activeCycleStart = $stmt->fetchColumn();
+        if ($dateStr) {
+            $targetDate = strtotime($dateStr);
+            $dayOfWeek = date('w', $targetDate);
+            $offset = ($dayOfWeek == 0 ? 6 : $dayOfWeek - 1);
+            $start = date('Y-m-d 00:00:00', strtotime("-$offset days", $targetDate));
+            $end = date('Y-m-d 00:00:00', strtotime($start . ' +7 days'));
+        } else {
+            $stmt = $this->conn->prepare("SELECT cycle_start FROM billing_cycles WHERE room_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1");
+            $stmt->execute([$id['value']]);
+            $activeCycleStart = $stmt->fetchColumn();
 
-        $dayOfWeek = date('w');
+            $dayOfWeek = date('w');
+            $offset = ($dayOfWeek == 0 ? 6 : $dayOfWeek - 1);
+            $calendarStart = date('Y-m-d 00:00:00', strtotime("-$offset days"));
+            
+            $start = ($activeCycleStart && $activeCycleStart > $calendarStart) ? $activeCycleStart : $calendarStart;
+            $end = date('Y-m-d 00:00:00', strtotime('+1 day'));
+        }
+        
+        $dbData = $this->dashboardRepo->getDailyBreakdown($id['column'], $id['value'], $start, $end);
+
+        // Pad to exactly 7 days (Monday to Sunday)
+        $targetDate = $dateStr ? strtotime($dateStr) : time();
+        $dayOfWeek = date('w', $targetDate);
         $offset = ($dayOfWeek == 0 ? 6 : $dayOfWeek - 1);
-        $calendarStart = date('Y-m-d 00:00:00', strtotime("-$offset days"));
+        $mondayStr = date('Y-m-d', strtotime("-$offset days", $targetDate));
+
+        $map = [];
+        foreach ($dbData as $row) {
+            $map[$row['day']] = $row;
+        }
+
+        $result = [];
+        for ($i = 0; $i < 7; $i++) {
+            $dayStr = date('Y-m-d', strtotime("$mondayStr +$i days"));
+            if (isset($map[$dayStr])) {
+                $result[] = $map[$dayStr];
+            } else {
+                $result[] = [
+                    'day' => $dayStr,
+                    'totalEnergy' => 0,
+                    'avgPower' => 0,
+                    'peakPower' => 0,
+                    'totalCost' => 0,
+                    'entries' => 0
+                ];
+            }
+        }
         
-        $start = ($activeCycleStart && $activeCycleStart > $calendarStart) ? $activeCycleStart : $calendarStart;
-        $end = date('Y-m-d 00:00:00', strtotime('+1 day'));
-        
-        return ['success' => true, 'data' => $this->dashboardRepo->getDailyBreakdown($id['column'], $id['value'], $start, $end)];
+        return ['success' => true, 'data' => $result];
     }
 
     public function getDailyBreakdownFiltered($roomId, $userId, $role, $year, $month) {
         $id = $this->resolveIdentifier($roomId, $userId, $role);
-        list($start, $end) = $this->getCycleBoundsForMonth($id['value'], $year, $month);
+        $start = sprintf('%04d-%02d-01 00:00:00', $year, $month);
+        $end = date('Y-m-d 00:00:00', strtotime("+1 month", strtotime($start)));
         return ['success' => true, 'data' => $this->dashboardRepo->getDailyBreakdown($id['column'], $id['value'], $start, $end)];
     }
 
@@ -327,5 +371,57 @@ class DashboardService {
         $cycles = $stmt->fetchAll(PDO::FETCH_ASSOC);
         
         return ['success' => true, 'data' => $cycles];
+    }
+
+    /**
+     * Get monthly aggregated consumption for an entire year.
+     * Returns 12 data points (Jan–Dec) with totalEnergy, avgPower, peakPower.
+     */
+    public function getYearlyBreakdown($roomId, $userId, $role, $year) {
+        $id = $this->resolveIdentifier($roomId, $userId, $role);
+        $col = $id['column'];
+        $val = $id['value'];
+        $rate = $this->getCurrentRate();
+
+        $start = "$year-01-01 00:00:00";
+        $end = ($year + 1) . "-01-01 00:00:00";
+
+        $sql = "SELECT 
+                    MONTH(timestamp) as month,
+                    SUM(energy) as totalEnergy,
+                    AVG(power) as avgPower,
+                    MAX(power) as peakPower,
+                    COUNT(*) as entries
+                FROM consumption_logs 
+                WHERE $col = ? AND timestamp >= ? AND timestamp < ?
+                GROUP BY MONTH(timestamp)
+                ORDER BY month ASC";
+
+        $stmt = $this->conn->prepare($sql);
+        $stmt->execute([$val, $start, $end]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        // Build a full 12-month array
+        $monthMap = [];
+        foreach ($rows as $row) {
+            $monthMap[(int)$row['month']] = $row;
+        }
+
+        $result = [];
+        for ($m = 1; $m <= 12; $m++) {
+            $energy = isset($monthMap[$m]) ? floatval($monthMap[$m]['totalEnergy']) : 0;
+            $result[] = [
+                'month' => $m,
+                'label' => $m,
+                'totalEnergy' => $energy,
+                'energy' => $energy,
+                'totalCost' => round($energy * $rate, 2),
+                'avgPower' => isset($monthMap[$m]) ? floatval($monthMap[$m]['avgPower']) : 0,
+                'peakPower' => isset($monthMap[$m]) ? floatval($monthMap[$m]['peakPower']) : 0,
+                'entries' => isset($monthMap[$m]) ? intval($monthMap[$m]['entries']) : 0
+            ];
+        }
+
+        return ['success' => true, 'data' => $result];
     }
 }

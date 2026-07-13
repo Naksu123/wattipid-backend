@@ -68,13 +68,15 @@ class DashboardController {
 
     public function getHourlyBreakdown($user, $data) {
         $roomId = $this->validateRoomAccess($data, $user);
-        $result = $this->dashboardService->getHourlyBreakdown($roomId, $user['id'], $user['role']);
+        $dateStr = $data['dateStr'] ?? null;
+        $result = $this->dashboardService->getHourlyBreakdown($roomId, $user['id'], $user['role'], $dateStr);
         ResponseHelper::sendRaw($result);
     }
 
     public function getWeeklyBreakdown($user, $data) {
         $roomId = $this->validateRoomAccess($data, $user);
-        $result = $this->dashboardService->getWeeklyBreakdown($roomId, $user['id'], $user['role']);
+        $dateStr = $data['dateStr'] ?? null;
+        $result = $this->dashboardService->getWeeklyBreakdown($roomId, $user['id'], $user['role'], $dateStr);
         ResponseHelper::sendRaw($result);
     }
 
@@ -111,6 +113,13 @@ class DashboardController {
     public function getAvailableBillingCycles($user, $data) {
         $roomId = $this->validateRoomAccess($data, $user);
         $result = $this->dashboardService->getAvailableBillingCycles($roomId, $user['id'], $user['role']);
+        ResponseHelper::sendRaw($result);
+    }
+
+    public function getYearlyBreakdown($user, $data) {
+        $roomId = $this->validateRoomAccess($data, $user);
+        $year = $data['year'] ?? date('Y');
+        $result = $this->dashboardService->getYearlyBreakdown($roomId, $user['id'], $user['role'], (int)$year);
         ResponseHelper::sendRaw($result);
     }
 }
