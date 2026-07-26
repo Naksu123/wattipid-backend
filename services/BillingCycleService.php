@@ -42,12 +42,11 @@ class BillingCycleService {
         if ($now > $activeCycle['cycle_end']) {
             // Cycle has ended. Complete it.
             
-            // Calculate exact final totals for the cycle before closing
-            $stmtTotals = $this->db->prepare("SELECT SUM(energy) as e, SUM(cost) as c FROM consumption_logs WHERE billing_cycle_id = ?");
+            // Calculate exact final energy total for the cycle before closing
+            $stmtTotals = $this->db->prepare("SELECT SUM(energy) as e FROM consumption_logs WHERE billing_cycle_id = ?");
             $stmtTotals->execute([$activeCycle['id']]);
             $totals = $stmtTotals->fetch(PDO::FETCH_ASSOC);
-            $finalKwh = $totals['e'] ?? 0;
-            $finalCost = $totals['c'] ?? 0;
+            $finalKwh = (float)($totals['e'] ?? 0);
 
             // Fetch settings and room info for detailed breakdown
             $rateQuery = $this->db->query("SELECT setting_value FROM settings WHERE setting_key = 'rate_per_kwh'");
@@ -73,14 +72,36 @@ class BillingCycleService {
                 $previousBalance = (float)$prevCycle['grand_total'];
             }
 
-            // Defaults for new fields (Can be updated later via Landlord dashboard)
+            // ================================================================
+            // CENECO-Style Billing Breakdown (Proportional splits of rate)
+            // ================================================================
+            // CORRECT FORMULA: electricity_charge = total_kwh × rate_per_kwh
+            // NOT SUM(cost) which suffers from micro-rounding loss
+            $electricityCharge = round($finalKwh * $rate, 2);
+
+            // CENECO proportional breakdown of the rate per kWh
+            // Distribution: 15%, Generation: 50%, Transmission: 10%
+            // System Loss: 5%, Metering: 5%, Supply: 5%, VAT: 10%
+            $distributionCharge = round($finalKwh * ($rate * 0.15), 2);
+            $generationCharge   = round($finalKwh * ($rate * 0.50), 2);
+            $transmissionCharge = round($finalKwh * ($rate * 0.10), 2);
+            $systemLossCharge   = round($finalKwh * ($rate * 0.05), 2);
+            $meteringCharge     = round($finalKwh * ($rate * 0.05), 2);
+            $supplyCharge       = round($finalKwh * ($rate * 0.05), 2);
+            $vatAmount          = round($finalKwh * ($rate * 0.10), 2);
+
+            // Miscellaneous Fee: 2% of electricity charge (per Terms §5)
+            $miscellaneousFee = round($electricityCharge * 0.02, 2);
+
+            // Additional Charges (configurable by landlord, default 0)
             $additionalCharges = 0.00;
             $discounts = 0.00;
             
             // Re-apply existing penalty if any (though usually 0 at closing time)
             $penaltyAmount = (float)($activeCycle['penalty_amount'] ?? 0);
 
-            $grandTotal = $monthlyRent + $finalCost + $previousBalance + $additionalCharges + $penaltyAmount - $discounts;
+            // TOTAL = electricity + misc fee + rent + previous balance + additional + penalty - discounts
+            $grandTotal = $electricityCharge + $miscellaneousFee + $monthlyRent + $previousBalance + $additionalCharges + $penaltyAmount - $discounts;
             
             $invoiceNumber = 'WT-' . date('Ym', strtotime($activeCycle['cycle_end'])) . '-' . $activeCycle['id'];
 
@@ -94,6 +115,14 @@ class BillingCycleService {
                 rate_per_kwh = ?,
                 monthly_rent = ?,
                 electricity_charge = ?,
+                distribution_charge = ?,
+                generation_charge = ?,
+                transmission_charge = ?,
+                system_loss_charge = ?,
+                metering_charge = ?,
+                supply_charge = ?,
+                vat_amount = ?,
+                miscellaneous_fee = ?,
                 previous_balance = ?,
                 additional_charges = ?,
                 discounts = ?,
@@ -103,12 +132,20 @@ class BillingCycleService {
                 
             $update->execute([
                 $finalKwh, 
-                $finalCost, 
+                $electricityCharge,   // total_cost = correct electricity charge
                 $previousReading, 
                 $currentReading, 
                 $rate, 
                 $monthlyRent, 
-                $finalCost, // electricity_charge = total_cost
+                $electricityCharge,   // electricity_charge = total_kwh × rate
+                $distributionCharge,
+                $generationCharge,
+                $transmissionCharge,
+                $systemLossCharge,
+                $meteringCharge,
+                $supplyCharge,
+                $vatAmount,
+                $miscellaneousFee,
                 $previousBalance, 
                 $additionalCharges, 
                 $discounts, 
