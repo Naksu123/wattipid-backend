@@ -123,11 +123,25 @@ class PaymentController {
 
                 $this->logAudit($authenticatedUser['id'], 'landlord', 'approve_payment', 'payments', $paymentId, 'pending', "verified (amount: $actualAmount, status: $newStatus)");
 
+                // Fetch tenant name for email template
+                $tenantStmt = $this->db->prepare("SELECT name FROM users WHERE id = ?");
+                $tenantStmt->execute([$payment['tenant_id']]);
+                $tenantName = $tenantStmt->fetchColumn() ?: 'Tenant';
+
+                $paymentData = [
+                    'tenantName' => $tenantName,
+                    'roomNumber' => $payment['room_id'],
+                    'paymentMethod' => $payment['payment_method'],
+                    'referenceNumber' => $payment['reference_number'],
+                    'dateSubmitted' => $payment['payment_date'],
+                    'verifiedBy' => $authenticatedUser['name'] ?? 'Landlord'
+                ];
+
                 // Send Real-time Notification
                 require_once __DIR__ . '/../services/BillingNotificationService.php';
                 $notifSvc = new BillingNotificationService($this->db);
                 $remainingBalance = max($grandTotal - $newAmountPaid, 0);
-                $notifSvc->sendPaymentVerificationAlert($payment['room_id'], $payment['tenant_id'], $actualAmount, $newStatus, $payment['payment_method'], $remainingBalance);
+                $notifSvc->sendPaymentVerificationAlert($payment['room_id'], $payment['tenant_id'], $actualAmount, $newStatus, $payment['payment_method'], $remainingBalance, $paymentData);
             } else {
                 $stmt2 = $this->db->prepare("UPDATE payments SET status = 'rejected', verified_by = ?, rejection_reason = ? WHERE id = ?");
                 $stmt2->execute([$authenticatedUser['id'], $reason, $paymentId]);

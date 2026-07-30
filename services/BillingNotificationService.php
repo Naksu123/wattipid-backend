@@ -290,16 +290,16 @@ class BillingNotificationService {
     // =========================================================
     // CHECK 4: Payment Verification Alerts (Real-time trigger)
     // =========================================================
-    public function sendPaymentVerificationAlert($roomId, $userId, $amountPaid, $status, $paymentMethod, $remainingBalance) {
+    public function sendPaymentVerificationAlert($roomId, $userId, $amountPaid, $status, $paymentMethod, $remainingBalance, $paymentData = []) {
         $settings = $this->getPreferences($userId, $roomId);
         if (!$settings['notifications_enabled'] || !($settings['payment_alerts'] ?? true)) return false;
 
         $isPartial = $status === 'partially_paid';
         
-        $title = $isPartial ? '💵 Partial Payment Verified' : '✅ Payment Verified';
+        $title = $isPartial ? '💵 Partial Payment Verified' : 'Payment Verified';
         $message = $isPartial 
             ? "Your partial payment of ₱" . number_format($amountPaid, 2) . " via " . strtoupper($paymentMethod) . " has been verified. Remaining balance: ₱" . number_format($remainingBalance, 2) . "."
-            : "Your payment of ₱" . number_format($amountPaid, 2) . " via " . strtoupper($paymentMethod) . " has been verified. Your bill is now fully paid!";
+            : "Your payment has been reviewed and approved by your landlord. Your billing status has been updated to Paid.";
 
         $alert = [
             'type' => $isPartial ? 'payment_partial' : 'payment_verified',
@@ -330,7 +330,23 @@ class BillingNotificationService {
             $alert['id'] = $notifId;
 
             if ($settings['push_enabled']) {
-                $this->queuePush($userId, $alert);
+                $pushAlert = $alert;
+                if (!$isPartial) {
+                    $pushAlert['title'] = "Payment Successfully Verified";
+                    $pushAlert['message'] = "Your payment has been accepted and marked as Paid. Tap to view payment details.";
+                }
+                $pushAlert['data']['url'] = '/(tenant)/billing-history';
+                $this->queuePush($userId, $pushAlert);
+            }
+
+            if (!$isPartial && !empty($paymentData)) {
+                $userStmt = $this->conn->prepare("SELECT email FROM users WHERE id = ?");
+                $userStmt->execute([$userId]);
+                $tenantEmail = $userStmt->fetchColumn();
+                
+                if ($tenantEmail) {
+                    $this->queueVerificationEmail($tenantEmail, $amountPaid, $paymentData);
+                }
             }
 
             return true;
@@ -341,6 +357,69 @@ class BillingNotificationService {
             error_log("[BillingNotifSvc] Error saving payment alert: " . $e->getMessage());
             return false;
         }
+    }
+
+    private function queueVerificationEmail($toEmail, $amountPaid, $paymentData) {
+        $subject = "Payment Successfully Verified";
+        
+        $tenantName = htmlspecialchars($paymentData['tenantName'] ?? 'Tenant');
+        $roomNumber = htmlspecialchars($paymentData['roomNumber'] ?? 'N/A');
+        $paymentMethod = htmlspecialchars($paymentData['paymentMethod'] ?? 'N/A');
+        $refNumber = htmlspecialchars($paymentData['referenceNumber'] ?? 'N/A');
+        $dateSubmitted = htmlspecialchars($paymentData['dateSubmitted'] ?? date('Y-m-d'));
+        $dateVerified = htmlspecialchars(date('Y-m-d H:i:s'));
+        $verifiedBy = htmlspecialchars($paymentData['verifiedBy'] ?? 'Landlord');
+        $amountFmt = number_format($amountPaid, 2);
+        
+        $htmlBody = "
+            <div style=\"font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;\">
+                <div style=\"background-color: #10B981; padding: 20px; text-align: center;\">
+                    <h1 style=\"color: white; margin: 0; font-size: 24px;\">Your Payment Has Been Successfully Reviewed and Accepted</h1>
+                </div>
+                <div style=\"padding: 20px; background-color: #f9fafb; border: 1px solid #e5e7eb;\">
+                    <p>Dear <strong>{$tenantName}</strong>,</p>
+                    <p>We are pleased to inform you that your recent payment has been reviewed and approved by your landlord.</p>
+                    
+                    <h3 style=\"color: #111827; border-bottom: 2px solid #10B981; padding-bottom: 5px;\">Payment Details:</h3>
+                    <table style=\"width: 100%; border-collapse: collapse; margin-bottom: 20px;\">
+                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\"><strong>Tenant Name:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\">{$tenantName}</td></tr>
+                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\"><strong>Room Number:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\">{$roomNumber}</td></tr>
+                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\"><strong>Payment Method:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\">{$paymentMethod}</td></tr>
+                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\"><strong>Reference Number:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\">{$refNumber}</td></tr>
+                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\"><strong>Amount Paid:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #10B981;\">₱{$amountFmt}</td></tr>
+                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\"><strong>Date Submitted:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\">{$dateSubmitted}</td></tr>
+                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\"><strong>Date Verified:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\">{$dateVerified}</td></tr>
+                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\"><strong>Verified By:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\">{$verifiedBy}</td></tr>
+                    </table>
+                    
+                    <div style=\"background-color: #ECFDF5; padding: 15px; border-left: 4px solid #10B981; margin-bottom: 20px;\">
+                        <h4 style=\"margin: 0 0 5px 0; color: #065F46;\">Payment Status: <span style=\"font-size: 18px;\">PAID</span></h4>
+                        <p style=\"margin: 0; color: #047857;\">Your account has been updated successfully, and no outstanding balance remains for this billing period.</p>
+                    </div>
+                    
+                    <p>Thank you for completing your payment on time.</p>
+                    <p>If you have any questions regarding your billing statement, please contact your landlord through the Wattipid Smart Electricity Monitoring System.</p>
+                    
+                    <br>
+                    <p>Sincerely,</p>
+                    <p><strong>Wattipid Smart Electricity Monitoring System</strong></p>
+                    
+                    <p style=\"font-size: 11px; color: #6b7280; border-top: 1px solid #e5e7eb; padding-top: 10px; margin-top: 20px;\">This is an automated message generated by Wattipid. Please do not reply to this email.</p>
+                </div>
+            </div>
+        ";
+        
+        $textBody = "Payment Successfully Verified\n\nDear {$tenantName},\n\nWe are pleased to inform you that your recent payment of ₱{$amountFmt} via {$paymentMethod} has been reviewed and approved by your landlord.\n\nPayment Status: PAID\n\nYour account has been updated successfully, and no outstanding balance remains for this billing period.\n\nThank you for completing your payment on time.";
+
+        require_once __DIR__ . '/../utils/QueueService.php';
+        $queue = new QueueService($this->conn);
+        $queue->push('email', [
+            'to' => $toEmail,
+            'name'  => $tenantName,
+            'subject'  => $subject,
+            'htmlBody' => $htmlBody,
+            'textBody' => $textBody
+        ]);
     }
 
     public function sendPaymentRejectionAlert($roomId, $userId, $amount, $reason) {
