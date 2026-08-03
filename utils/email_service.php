@@ -351,3 +351,53 @@ function logEmailDelivery($conn, $email, $type, $status, $provider, $errorMessag
         $stmt->execute([$email, $type, $status, $provider, $errorMessage]);
     } catch (Exception $e) {}
 }
+
+// ============ INVITATION TEMPLATE ============
+
+function getInvitationEmailTemplate($tenantName, $roomNumber, $accessCode, $expiresAt) {
+    $dateFmt = date('F j, Y g:i A', strtotime($expiresAt));
+    return "
+        <div style='font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;'>
+            <div style='background-color: #2563EB; padding: 20px; text-align: center;'>
+                <h1 style='color: white; margin: 0; font-size: 24px;'>Your Wattipid Registration Invitation</h1>
+            </div>
+            <div style='padding: 20px; background-color: #f9fafb; border: 1px solid #e5e7eb;'>
+                <p>Dear <strong>{$tenantName}</strong>,</p>
+                <p>You have been invited to register for the Wattipid Smart Electricity Monitoring System.</p>
+                
+                <h3 style='color: #111827; border-bottom: 2px solid #2563EB; padding-bottom: 5px;'>Registration Details:</h3>
+                <p><strong>Room Number:</strong> {$roomNumber}</p>
+                <p><strong>Your Access Code is:</strong> <span style='font-size: 20px; font-weight: bold; color: #2563EB; letter-spacing: 2px;'>{$accessCode}</span></p>
+                <p style='color: #DC2626; font-weight: bold;'>This Access Code is valid until: {$dateFmt}</p>
+                
+                <h4>To complete your registration:</h4>
+                <ol>
+                    <li>Open the Wattipid mobile application.</li>
+                    <li>Enter your registered email address.</li>
+                    <li>Continue to the registration page.</li>
+                    <li>Enter your Access Code.</li>
+                    <li>Create your account.</li>
+                </ol>
+                
+                <p>If your Access Code expires before registration is completed, please contact your landlord to request a new invitation.</p>
+                <p style='font-size: 12px; color: #6b7280;'>If you did not expect this invitation, you may safely ignore this email.</p>
+                <br>
+                <p>Regards,</p>
+                <p><strong>Wattipid Smart Electricity Monitoring System</strong></p>
+            </div>
+        </div>
+    ";
+}
+
+function getInvitationEmailPlainText($tenantName, $roomNumber, $accessCode, $expiresAt) {
+    $dateFmt = date('F j, Y g:i A', strtotime($expiresAt));
+    return "Your Wattipid Registration Invitation\n\nDear {$tenantName},\n\nYou have been invited to register for the Wattipid Smart Electricity Monitoring System.\n\nRoom Number: {$roomNumber}\nYour Access Code is: {$accessCode}\nThis Access Code is valid until: {$dateFmt}\n\nTo complete your registration:\n1. Open the Wattipid mobile application.\n2. Enter your registered email address.\n3. Continue to the registration page.\n4. Enter your Access Code.\n5. Create your account.\n\nIf your Access Code expires before registration is completed, please contact your landlord to request a new invitation.\n\nIf you did not expect this invitation, you may safely ignore this email.\n\nRegards,\nWattipid Smart Electricity Monitoring System";
+}
+
+function queueInvitationEmail($conn, $email, $tenantName, $roomNumber, $accessCode, $expiresAt) {
+    $subject = 'Your Wattipid Registration Invitation';
+    $htmlBody = getInvitationEmailTemplate($tenantName, $roomNumber, $accessCode, $expiresAt);
+    $textBody = getInvitationEmailPlainText($tenantName, $roomNumber, $accessCode, $expiresAt);
+    return queueEmail($conn, $email, $tenantName, $subject, $htmlBody, $textBody);
+}
+// Force LSP re-index

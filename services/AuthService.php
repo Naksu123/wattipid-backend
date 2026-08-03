@@ -188,22 +188,28 @@ class AuthService {
 
     public function register($name, $email, $password, $role = 'tenant', $code = null, $termsVersionId = null, $ipAddress = null, $deviceInfo = null) {
         $roomId = null;
+        $invitationId = null;
 
         if ($role === 'tenant') {
             if (!$code) {
                 return ['success' => false, 'message' => 'Access code is required for tenants'];
             }
 
-            require_once __DIR__ . '/../utils/SecurityMiddleware.php';
-            $codeHash = SecurityMiddleware::hashAccessCode($code);
-
-            $invitation = $this->invitationRepo->findPendingByEmailAndCodeHash($email, $codeHash);
+            $invitation = $this->invitationRepo->getPendingInvitationByEmail($email);
             if (!$invitation) {
-                // Log failed attempt
-                $this->logAccessCodeAudit('Failed Registration Attempt', $email, $_SERVER['REMOTE_ADDR'] ?? 'unknown');
-                return ['success' => false, 'message' => 'Invalid or expired access code for this email'];
+                $this->logAccessCodeAudit('Failed Registration - No Invitation', $email, $_SERVER['REMOTE_ADDR'] ?? 'unknown');
+                return ['success' => false, 'message' => 'No invitation exists for this email.'];
+            }
+            if (strtotime($invitation['expires_at']) < time()) {
+                $this->logAccessCodeAudit('Failed Registration - Expired', $email, $_SERVER['REMOTE_ADDR'] ?? 'unknown');
+                return ['success' => false, 'message' => 'Your Access Code has expired. Please contact your landlord to request a new invitation.'];
+            }
+            if (hash('sha256', $code) !== $invitation['access_code_hash']) {
+                $this->logAccessCodeAudit('Failed Registration - Wrong Code', $email, $_SERVER['REMOTE_ADDR'] ?? 'unknown');
+                return ['success' => false, 'message' => 'The Access Code you entered is incorrect.'];
             }
             $roomId = $invitation['room_id'];
+            $invitationId = $invitation['id'];
         }
 
         $passwordHash = password_hash($password, PASSWORD_DEFAULT);
@@ -219,8 +225,8 @@ class AuthService {
 
             // 2. Room & Invitation Updates (Atomic)
             if ($role === 'tenant' && $roomId) {
-                if (!$this->invitationRepo->markAsUsed($email, $codeHash)) {
-                    throw new Exception("Registration failed: Could not invalidate invitation code.");
+                if (!$this->invitationRepo->markAsRegistered($invitationId, $userId)) {
+                    throw new Exception("Registration failed: Could not mark invitation as registered.");
                 }
                 if (!$this->roomRepo->markAsOccupied($roomId, $name)) {
                     throw new Exception("Registration failed: Could not assign room.");

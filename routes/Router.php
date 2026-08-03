@@ -221,9 +221,6 @@ class Router {
             case 'getRoomById':
                 $this->roomController->getRoomById($data);
                 return true;
-            case 'getRoomByTenantCode':
-                $this->roomController->getRoomByTenantCode($data);
-                return true;
             case 'updateRoomStatus':
                 $this->roomController->updateRoomStatus($authenticatedUser, $data);
                 return true;
@@ -244,6 +241,18 @@ class Router {
                 return true;
             case 'saveTenantInvitation':
                 $this->roomController->saveTenantInvitation($authenticatedUser, $data);
+                return true;
+            case 'getInvitations':
+                $this->roomController->getInvitations($authenticatedUser, $data);
+                return true;
+            case 'resendInvitation':
+                $this->roomController->resendInvitation($authenticatedUser, $data);
+                return true;
+            case 'cancelInvitation':
+                $this->roomController->cancelInvitation($authenticatedUser, $data);
+                return true;
+            case 'verifyAccessCode':
+                $this->roomController->verifyAccessCode($data);
                 return true;
             case 'getTenantInvitationByEmail':
                 $this->roomController->getTenantInvitationByEmail($data);

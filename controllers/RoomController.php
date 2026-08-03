@@ -39,11 +39,6 @@ class RoomController {
         ResponseHelper::sendRaw($result);
     }
 
-    public function getRoomByTenantCode($data) {
-        $result = $this->roomService->getRoomByTenantCode($data['code'] ?? '');
-        ResponseHelper::sendRaw($result);
-    }
-
     public function updateRoomStatus($authenticatedUser, $data) {
         if ($authenticatedUser['role'] !== 'landlord') {
             ResponseHelper::error("Forbidden", 403);
@@ -94,6 +89,35 @@ class RoomController {
 
     public function getTenantInvitationByEmail($data) {
         $result = $this->roomService->getTenantInvitationByEmail($data['email'] ?? '');
+        ResponseHelper::sendRaw($result);
+    }
+
+    public function getInvitations($authenticatedUser, $data) {
+        if ($authenticatedUser['role'] !== 'landlord') {
+            ResponseHelper::error("Forbidden", 403);
+        }
+        $result = $this->roomService->getInvitations();
+        ResponseHelper::sendRaw($result);
+    }
+
+    public function resendInvitation($authenticatedUser, $data) {
+        if ($authenticatedUser['role'] !== 'landlord') {
+            ResponseHelper::error("Forbidden", 403);
+        }
+        $result = $this->roomService->resendInvitation($data['invitationId'], $authenticatedUser['id']);
+        ResponseHelper::sendRaw($result);
+    }
+
+    public function cancelInvitation($authenticatedUser, $data) {
+        if ($authenticatedUser['role'] !== 'landlord') {
+            ResponseHelper::error("Forbidden", 403);
+        }
+        $result = $this->roomService->cancelInvitation($data['invitationId']);
+        ResponseHelper::sendRaw($result);
+    }
+
+    public function verifyAccessCode($data) {
+        $result = $this->roomService->verifyAccessCode($data['email'] ?? '', $data['accessCode'] ?? '');
         ResponseHelper::sendRaw($result);
     }
 

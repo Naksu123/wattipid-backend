@@ -163,16 +163,30 @@ class BillingCycleService {
             while ($nextCycleEnd < $now) {
                 // Insert empty completed cycles to preserve history continuity
                 $emptyInvoice = 'WT-' . date('Ym', strtotime($nextCycleEnd)) . '-0';
-                $insert = $this->db->prepare("INSERT INTO billing_cycles (room_id, tenant_name, cycle_start, cycle_end, total_kwh, total_cost, status, due_date, invoice_number, current_reading, previous_reading) VALUES (?, ?, ?, ?, 0, 0, 'completed', DATE_ADD(?, INTERVAL 3 DAY), ?, ?, ?)");
-                $insert->execute([$roomId, $activeCycle['tenant_name'], $nextCycleStart, $nextCycleEnd, $nextCycleEnd, $emptyInvoice, $currentReading, $currentReading]);
+                
+                $checkEmpty = $this->db->prepare("SELECT id FROM billing_cycles WHERE room_id = ? AND DATE_FORMAT(cycle_start, '%Y-%m') = DATE_FORMAT(?, '%Y-%m')");
+                $checkEmpty->execute([$roomId, $nextCycleStart]);
+                if (!$checkEmpty->fetch()) {
+                    $insert = $this->db->prepare("INSERT INTO billing_cycles (room_id, tenant_name, cycle_start, cycle_end, total_kwh, total_cost, status, due_date, invoice_number, current_reading, previous_reading) VALUES (?, ?, ?, ?, 0, 0, 'completed', DATE_ADD(?, INTERVAL 3 DAY), ?, ?, ?)");
+                    $insert->execute([$roomId, $activeCycle['tenant_name'], $nextCycleStart, $nextCycleEnd, $nextCycleEnd, $emptyInvoice, $currentReading, $currentReading]);
+                }
                 
                 $nextCycleStart = $this->getSafeNextMonth($nextCycleStart);
                 $nextCycleEnd = date('Y-m-d 23:59:59', strtotime($this->getSafeNextMonth($nextCycleStart) . ' -1 day'));
             }
 
             // Insert the true active cycle
-            $insertActive = $this->db->prepare("INSERT INTO billing_cycles (room_id, tenant_name, cycle_start, cycle_end, status) VALUES (?, ?, ?, ?, 'active')");
-            $insertActive->execute([$roomId, $activeCycle['tenant_name'], $nextCycleStart, $nextCycleEnd]);
+            $checkActive = $this->db->prepare("SELECT id FROM billing_cycles WHERE room_id = ? AND DATE_FORMAT(cycle_start, '%Y-%m') = DATE_FORMAT(?, '%Y-%m')");
+            $checkActive->execute([$roomId, $nextCycleStart]);
+            
+            // Also ensure no other active cycle exists for this room
+            $checkAnyActive = $this->db->prepare("SELECT id FROM billing_cycles WHERE room_id = ? AND status = 'active'");
+            $checkAnyActive->execute([$roomId]);
+            
+            if (!$checkActive->fetch() && !$checkAnyActive->fetch()) {
+                $insertActive = $this->db->prepare("INSERT INTO billing_cycles (room_id, tenant_name, cycle_start, cycle_end, status) VALUES (?, ?, ?, ?, 'active')");
+                $insertActive->execute([$roomId, $activeCycle['tenant_name'], $nextCycleStart, $nextCycleEnd]);
+            }
         }
     }
 
@@ -192,7 +206,11 @@ class BillingCycleService {
             // Check if active cycle already exists to prevent duplicates
             $check = $this->db->prepare("SELECT id FROM billing_cycles WHERE room_id = ? AND status = 'active'");
             $check->execute([$roomId]);
-            if (!$check->fetch()) {
+            
+            $checkMonth = $this->db->prepare("SELECT id FROM billing_cycles WHERE room_id = ? AND DATE_FORMAT(cycle_start, '%Y-%m') = DATE_FORMAT(?, '%Y-%m')");
+            $checkMonth->execute([$roomId, $startDate]);
+            
+            if (!$check->fetch() && !$checkMonth->fetch()) {
                 $insert = $this->db->prepare("INSERT INTO billing_cycles (room_id, tenant_name, cycle_start, cycle_end, status) VALUES (?, ?, ?, ?, 'active')");
                 $insert->execute([$roomId, $room['tenant_name'], $startDate, $endDate]);
             }

@@ -4,7 +4,16 @@ require_once __DIR__ . '/../repositories/UserRepository.php';
 require_once __DIR__ . '/../repositories/InvitationRepository.php';
 require_once __DIR__ . '/../repositories/HistoryRepository.php';
 require_once __DIR__ . '/../repositories/ConsumptionRepository.php';
+require_once __DIR__ . '/../utils/email_service.php';
+require_once __DIR__ . '/../utils/SecurityMiddleware.php';
 
+/**
+ * @property RoomRepository $roomRepo
+ * @property UserRepository $userRepo
+ * @property InvitationRepository $invitationRepo
+ * @property HistoryRepository $historyRepo
+ * @property ConsumptionRepository $consumptionRepo
+ */
 class RoomService {
     private $conn;
     private $roomRepo;
@@ -22,10 +31,39 @@ class RoomService {
         $this->consumptionRepo = new ConsumptionRepository($dbConnection);
     }
 
+    /**
+     * Mask an access code for dashboard display.
+     * e.g. "783097" → "78***97"
+     */
+    private function maskAccessCode($code) {
+        $len = strlen($code);
+        if ($len <= 3) return str_repeat('*', $len);
+        $first = substr($code, 0, 2);
+        $last = substr($code, -2);
+        return $first . str_repeat('*', $len - 4) . $last;
+    }
+
+    /**
+     * Decrypt the stored encrypted access code.
+     */
+    private function decryptAccessCode($encryptedCode) {
+        return SecurityMiddleware::decryptAccessCode($encryptedCode);
+    }
+
     private function sanitizeRoom($room) {
         if (!$room) return $room;
-        // The frontend only needs the masked code to display A7X*****QK
-        $room['tenant_code'] = $room['tenant_code_masked'] ?? '—';
+
+        // Look up the latest pending invitation for this room from the invitations table.
+        // This is the SINGLE SOURCE OF TRUTH for the access code.
+        $invitation = $this->invitationRepo->getPendingInvitationByRoom($room['room_id']);
+        if ($invitation && !empty($invitation['access_code_encrypted'])) {
+            $plainCode = $this->decryptAccessCode($invitation['access_code_encrypted']);
+            $room['tenant_code'] = $plainCode ? $this->maskAccessCode($plainCode) : '—';
+        } else {
+            $room['tenant_code'] = '—';
+        }
+
+        // Remove legacy columns from API response
         unset($room['tenant_code_hash']);
         unset($room['tenant_code_encrypted']);
         unset($room['tenant_code_masked']);
@@ -73,9 +111,6 @@ class RoomService {
         return ['success' => true, 'data' => $this->sanitizeRoom($room)];
     }
 
-    public function getRoomByTenantCode($code) {
-        return ['success' => true, 'data' => $this->roomRepo->findByTenantCode($code)];
-    }
 
     public function updateRoomStatus($roomId, $status, $tenantName, $startDate) {
         $this->roomRepo->updateStatus($roomId, $status, $tenantName, $startDate);
@@ -109,8 +144,12 @@ class RoomService {
             $stmt->execute([$toRoomId]);
 
             // 3. Create a BRAND NEW billing cycle for the tenant in the NEW room
-            $stmt = $this->conn->prepare("INSERT INTO billing_cycles (room_id, cycle_start, cycle_end, status) VALUES (?, NOW(), DATE_ADD(NOW(), INTERVAL 1 MONTH), 'active')");
-            $stmt->execute([$toRoomId]);
+            $checkActive = $this->conn->prepare("SELECT id FROM billing_cycles WHERE room_id = ? AND DATE_FORMAT(cycle_start, '%Y-%m') = DATE_FORMAT(NOW(), '%Y-%m')");
+            $checkActive->execute([$toRoomId]);
+            if (!$checkActive->fetch()) {
+                $stmt = $this->conn->prepare("INSERT INTO billing_cycles (room_id, cycle_start, cycle_end, status) VALUES (?, NOW(), DATE_ADD(NOW(), INTERVAL 1 MONTH), 'active')");
+                $stmt->execute([$toRoomId]);
+            }
 
             // 4. Mark New Room as Occupied (starting today)
             if (!$this->roomRepo->updateStatus($toRoomId, 'occupied', $tenant['tenant_name'], $today)) {
@@ -190,8 +229,11 @@ class RoomService {
         }
     }
 
-    private function generateSecureAccessCode() {
-        return 'WTPD-' . strtoupper(substr(bin2hex(random_bytes(4)), 0, 8)); // e.g. WTPD-A7X9P2QK
+    /**
+     * Generate a 6-digit numeric access code.
+     */
+    private function generateAccessCode() {
+        return (string)random_int(100000, 999999);
     }
 
     private function logAccessCodeAction($roomId, $action, $userId = null) {
@@ -202,21 +244,34 @@ class RoomService {
         } catch (Exception $e) {}
     }
 
+    /**
+     * Generate a new access code for a room.
+     * Cancels any existing pending invitation and creates a new one.
+     * Called when the landlord clicks "Generate New Access Code".
+     */
     public function generateNewTenantCode($roomId, $userId = null) {
         $room = $this->roomRepo->findById($roomId);
         if (!$room) return ['success' => false, 'message' => 'Room not found'];
 
-        require_once __DIR__ . '/../utils/SecurityMiddleware.php';
-        
-        $newCode = $this->generateSecureAccessCode();
-        $hash = SecurityMiddleware::hashAccessCode($newCode);
-        $encrypted = SecurityMiddleware::encryptAccessCode($newCode);
-        $masked = SecurityMiddleware::maskAccessCode($newCode);
+        // Cancel existing pending invitations for this room
+        $this->invitationRepo->cancelPendingByRoom($roomId);
 
-        $this->roomRepo->updateTenantCodeSecure($roomId, $hash, $encrypted, $masked);
+        // Generate ONE new code
+        $accessCode = $this->generateAccessCode();
+        $codeHash = hash('sha256', $accessCode);
+        $codeEncrypted = SecurityMiddleware::encryptAccessCode($accessCode);
+
+        // Get the email from the last invitation for this room (if any)
+        $lastInvitation = $this->invitationRepo->getPendingInvitationByRoom($roomId);
+        $email = $lastInvitation ? $lastInvitation['email'] : null;
+
+        if ($email) {
+            $this->invitationRepo->createInvitation($email, $roomId, $codeHash, $codeEncrypted, $userId);
+        }
+
         $this->logAccessCodeAction($roomId, 'Generated', $userId);
-        
-        return ['success' => true, 'message' => 'New code generated', 'data' => ['tenant_code' => $newCode]];
+
+        return ['success' => true, 'message' => 'New code generated', 'data' => ['tenant_code' => $accessCode]];
     }
 
     public function addRoom($data) {
@@ -229,14 +284,9 @@ class RoomService {
             return ['success' => false, 'message' => 'Room number already exists.'];
         }
 
-        require_once __DIR__ . '/../utils/SecurityMiddleware.php';
-        $newCode = $this->generateSecureAccessCode();
-        $data['tenant_code_hash'] = SecurityMiddleware::hashAccessCode($newCode);
-        $data['tenant_code_encrypted'] = SecurityMiddleware::encryptAccessCode($newCode);
-        $data['tenant_code_masked'] = SecurityMiddleware::maskAccessCode($newCode);
-
+        // No longer generate legacy tenant_code_* columns.
+        // Access codes are created only when the landlord sends an invitation.
         $this->roomRepo->createRoom($data);
-        $this->logAccessCodeAction($data['room_id'], 'Generated');
 
         return ['success' => true, 'message' => 'Room added successfully.'];
     }
@@ -275,73 +325,122 @@ class RoomService {
         return ['success' => true, 'message' => 'Room restored successfully.'];
     }
 
-    public function saveTenantInvitation($email, $roomId) {
+    /**
+     * Create a tenant invitation: generate ONE access code, store it, and email it.
+     * The same code is stored (encrypted) in the invitations table, displayed
+     * (masked) on the landlord dashboard, and sent via Brevo email.
+     */
+    public function saveTenantInvitation($email, $roomId, $landlordId = null) {
         $room = $this->roomRepo->findById($roomId);
         if (!$room) {
             return ['success' => false, 'message' => 'Room not found.'];
         }
 
-        if (empty($room['tenant_code_encrypted'])) {
-            return ['success' => false, 'message' => 'No access code generated for this room. Please regenerate the code first.'];
-        }
+        // Generate ONE access code — this is the single source of truth
+        $accessCode = $this->generateAccessCode();
+        $codeHash = hash('sha256', $accessCode);
+        $codeEncrypted = SecurityMiddleware::encryptAccessCode($accessCode);
 
-        require_once __DIR__ . '/../utils/SecurityMiddleware.php';
-        $decryptedCode = SecurityMiddleware::decryptAccessCode($room['tenant_code_encrypted']);
+        // Store in invitations table (cancels any previous pending invitations)
+        $this->invitationRepo->createInvitation($email, $roomId, $codeHash, $codeEncrypted, $landlordId);
+        $expiresAt = date('Y-m-d H:i:s', time() + (24 * 3600));
 
-        // Save to invitations using the exact same secure fields from the room
-        $this->invitationRepo->saveInvitationSecure($email, $roomId, $room['tenant_code_hash'], $room['tenant_code_encrypted'], $room['tenant_code_masked']);
-        
-        require_once __DIR__ . '/../utils/email_service.php';
-        $emailResult = sendAccessCodeEmail($this->conn, $email, $decryptedCode, $roomId);
+        // Send the SAME code via email — no new code generated here
+        $emailResult = queueInvitationEmail($this->conn, $email, 'Tenant', $roomId, $accessCode, $expiresAt);
 
-        if ($emailResult['success']) {
-            $this->logAccessCodeAction($roomId, 'Sent');
+        if ($emailResult) {
             if ($room['status'] === 'vacant') {
                 $this->roomRepo->updateStatus($roomId, 'on_process', null, null);
             }
-            return [
-                'success' => true, 
-                'message' => 'Invitation saved. Email sent successfully.',
-                'data' => [
-                    'emailSent' => true,
-                    'emailProvider' => $emailResult['provider'] ?? 'unknown'
-                ]
-            ];
+            return ['success' => true, 'message' => 'Invitation created and email sent successfully.'];
         } else {
-            return ['success' => false, 'message' => "Failed to send email: " . $emailResult['message']];
+            return ['success' => false, 'message' => 'Invitation saved, but failed to queue email.'];
         }
     }
 
-    public function getTenantInvitationByEmail($email) {
-        $stmt = $this->conn->prepare("SELECT * FROM invitations WHERE email = ? AND status = 'pending' LIMIT 1");
-        $stmt->execute([$email]);
-        $invitation = $stmt->fetch(PDO::FETCH_ASSOC);
+    public function getInvitations() {
+        $invitations = $this->invitationRepo->getAllInvitations();
+        return ['success' => true, 'data' => $invitations];
+    }
 
-        if ($invitation) {
-            if ($invitation['expires_at'] && strtotime($invitation['expires_at']) < time()) {
-                return ['success' => false, 'message' => "Your access code has expired.", 'data' => ["expired" => true]];
-            }
-
-            require_once __DIR__ . '/../utils/email_service.php';
-            require_once __DIR__ . '/../utils/SecurityMiddleware.php';
-            $decryptedCode = SecurityMiddleware::decryptAccessCode($invitation['tenant_code_encrypted']);
-
-            $emailResult = sendAccessCodeEmail($this->conn, $email, $decryptedCode, $invitation['room_id']);
-
-            if ($emailResult['success']) {
-                $this->invitationRepo->updateExpiry($email, 5);
-                $invitation['expires_at'] = date('Y-m-d H:i:s', time() + 300);
-                
-                // Hide encrypted data from frontend
-                unset($invitation['tenant_code_hash']);
-                unset($invitation['tenant_code_encrypted']);
-
-                return ['success' => true, 'message' => "Access code sent to your email", 'data' => $invitation];
-            } else {
-                return ['success' => false, 'message' => "Failed to send email: " . $emailResult['message']];
-            }
+    /**
+     * Resend an existing invitation. Does NOT generate a new code.
+     * Reads the existing code from the database and re-sends the same email.
+     * Only resets the expiration timer.
+     */
+    public function resendInvitation($invitationId, $landlordId) {
+        $invitation = $this->invitationRepo->getInvitationById($invitationId);
+        if (!$invitation) {
+            return ['success' => false, 'message' => 'Invitation not found.'];
         }
-        return ['success' => false, 'message' => "No access code found for this email."];
+
+        if ($invitation['status'] !== 'pending') {
+            return ['success' => false, 'message' => 'This invitation is no longer active.'];
+        }
+
+        // Decrypt the EXISTING code from the database — do NOT generate a new one
+        $accessCode = $this->decryptAccessCode($invitation['access_code_encrypted']);
+        if (!$accessCode) {
+            return ['success' => false, 'message' => 'Could not retrieve the access code. Please generate a new invitation.'];
+        }
+
+        // Reset expiry timer without changing the code
+        $this->invitationRepo->resendInvitation($invitationId);
+        $expiresAt = date('Y-m-d H:i:s', time() + (24 * 3600));
+
+        // Re-send the SAME code via email
+        queueInvitationEmail($this->conn, $invitation['email'], $invitation['tenant_name'] ?? 'Tenant', $invitation['room_id'], $accessCode, $expiresAt);
+
+        return ['success' => true, 'message' => 'Invitation resent successfully. The same access code has been sent again.'];
+    }
+
+    public function cancelInvitation($invitationId) {
+        $invitation = $this->invitationRepo->getInvitationById($invitationId);
+        if (!$invitation) {
+            return ['success' => false, 'message' => 'Invitation not found.'];
+        }
+        $this->invitationRepo->cancelInvitation($invitationId);
+        return ['success' => true, 'message' => 'Invitation cancelled successfully.'];
+    }
+
+    /**
+     * Verify a tenant's access code against the stored invitation.
+     * Compares the hash of the entered code against the stored hash.
+     */
+    public function verifyAccessCode($email, $accessCode) {
+        $invitation = $this->invitationRepo->getPendingInvitationByEmail($email);
+
+        if (!$invitation) {
+            return ['success' => false, 'message' => 'No invitation exists for this email.'];
+        }
+
+        if (strtotime($invitation['expires_at']) < time()) {
+            return ['success' => false, 'message' => 'Your Access Code has expired. Please contact your landlord to request a new invitation.'];
+        }
+
+        $enteredHash = hash('sha256', $accessCode);
+        if ($enteredHash !== $invitation['access_code_hash']) {
+            return ['success' => false, 'message' => 'The Access Code you entered is incorrect.'];
+        }
+
+        // Don't expose internal data — return only what the frontend needs
+        return [
+            'success' => true, 
+            'message' => 'Access code verified.', 
+            'data' => [
+                'invitation_id' => $invitation['id'],
+                'room_id' => $invitation['room_id'],
+                'email' => $invitation['email']
+            ]
+        ];
+    }
+
+    public function getTenantInvitationByEmail($email) {
+        $invitation = $this->invitationRepo->getPendingInvitationByEmail($email);
+        if (!$invitation) {
+            return ['success' => false, 'message' => 'No pending invitation found.'];
+        }
+        return ['success' => true, 'data' => $invitation];
     }
 
     public function getTenantHistory($roomId) {
