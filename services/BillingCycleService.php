@@ -1,8 +1,9 @@
 <?php
 class BillingCycleService {
+    /** @var \PDO */
     private $db;
 
-    public function __construct($dbConnection) {
+    public function __construct(\PDO $dbConnection) {
         $this->db = $dbConnection;
     }
 

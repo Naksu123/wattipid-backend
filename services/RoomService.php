@@ -15,6 +15,7 @@ require_once __DIR__ . '/../utils/SecurityMiddleware.php';
  * @property ConsumptionRepository $consumptionRepo
  */
 class RoomService {
+    /** @var \PDO */
     private $conn;
     private $roomRepo;
     private $userRepo;
@@ -22,7 +23,7 @@ class RoomService {
     private $historyRepo;
     private $consumptionRepo;
 
-    public function __construct($dbConnection) {
+    public function __construct(\PDO $dbConnection) {
         $this->conn = $dbConnection;
         $this->roomRepo = new RoomRepository($dbConnection);
         $this->userRepo = new UserRepository($dbConnection);

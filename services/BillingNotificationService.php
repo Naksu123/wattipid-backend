@@ -11,6 +11,7 @@
  */
 
 class BillingNotificationService {
+    /** @var \PDO */
     private $conn;
 
     // Cooldowns per alert type in minutes
@@ -21,7 +22,7 @@ class BillingNotificationService {
     // Overdue: once per day
     const OVERDUE_COOLDOWN = 1440;
 
-    public function __construct($dbConnection) {
+    public function __construct(\PDO $dbConnection) {
         $this->conn = $dbConnection;
     }
 
