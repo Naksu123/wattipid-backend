@@ -12,45 +12,55 @@ class SecurityMiddleware
      */
     public static function checkRateLimit($action)
     {
-        if (session_status() === PHP_SESSION_NONE) {
-            session_start();
-        }
-
-        $ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+        $ip = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? 'unknown';
         $time = time();
-        $key = "ratelimit_{$ip}_{$action}";
-
-        // Allowed requests per 10 seconds
+        $key = "ratelimit_" . md5($ip . $action);
+        $tempDir = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'wattipid_ratelimits';
+        
+        if (!is_dir($tempDir)) {
+            @mkdir($tempDir, 0777, true);
+        }
+        
+        $file = $tempDir . DIRECTORY_SEPARATOR . $key . '.json';
         $limit = 20;
 
-        if (!isset($_SESSION[$key])) {
-            $_SESSION[$key] = [
-                'count' => 1,
-                'first_request' => $time
-            ];
-            return true;
+        $fp = @fopen($file, 'c+');
+        if (!$fp) return true; // Fail open if permission issues
+
+        if (flock($fp, LOCK_EX)) {
+            $size = filesize($file);
+            $data = $size > 0 ? json_decode(fread($fp, $size), true) : null;
+            
+            if ($data && ($time - $data['first_request'] <= 10)) {
+                if ($data['count'] >= $limit) {
+                    flock($fp, LOCK_UN);
+                    fclose($fp);
+                    http_response_code(429);
+                    header('Content-Type: application/json');
+                    echo json_encode(["success" => false, "message" => "Too many requests. Please slow down."]);
+                    exit();
+                }
+                $data['count']++;
+            } else {
+                $data = ['count' => 1, 'first_request' => $time];
+            }
+            
+            ftruncate($fp, 0);
+            rewind($fp);
+            fwrite($fp, json_encode($data));
+            flock($fp, LOCK_UN);
         }
-
-        $data = $_SESSION[$key];
-        $timeDiff = $time - $data['first_request'];
-
-        if ($timeDiff > 10) {
-            // Reset after 10 seconds
-            $_SESSION[$key] = [
-                'count' => 1,
-                'first_request' => $time
-            ];
-            return true;
+        fclose($fp);
+        
+        // Randomly garbage collect old files (1% chance) to prevent disk bloat
+        if (mt_rand(1, 100) === 1) {
+            foreach (glob($tempDir . '/*.json') as $f) {
+                if ($time - filemtime($f) > 60) {
+                    @unlink($f);
+                }
+            }
         }
-
-        if ($data['count'] >= $limit) {
-            // Rate limit exceeded
-            http_response_code(429);
-            echo json_encode(["success" => false, "message" => "Too many requests. Please slow down."]);
-            exit();
-        }
-
-        $_SESSION[$key]['count']++;
+        
         return true;
     }
 

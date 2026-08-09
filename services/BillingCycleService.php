@@ -229,4 +229,4 @@ class BillingCycleService {
         return $res ? $res['id'] : null;
     }
 }
-?>
+

@@ -1,146 +1,189 @@
 <?php
 /**
- * Wattipid Tips Database Seeder
- * 
- * Populates the electricity_tips table with 60+ curated, dorm-specific
- * electricity-saving tips across all 12 categories.
- * 
- * Run once: c:\xampp\php\php.exe seed_tips.php
+ * Wattipid General Electricity Consumption Tips Seeder
+ * 12 Categories, 10 Tips each = 120 Total Tips
  */
 
 require_once __DIR__ . '/config/config.php';
 require_once __DIR__ . '/config/db.php';
 
 $tips = [
-    // ======================== AIR CONDITIONING ========================
-    ['title' => 'Set AC to 25°C', 'message' => 'Setting your air conditioner to 25°C instead of lower temperatures can reduce energy consumption by up to 20%. This temperature is comfortable for sleeping and studying while keeping your electricity bill manageable.', 'category' => 'Air Conditioning', 'icon' => 'snow-outline', 'difficulty' => 'Easy', 'savings_level' => 'High'],
-    ['title' => 'Use AC Timer Mode', 'message' => 'Set your air conditioner timer to turn off after 2-3 hours. Your room will stay cool long enough for you to fall asleep, and you avoid running the AC all night which can consume 6-8 kWh.', 'category' => 'Air Conditioning', 'icon' => 'timer-outline', 'difficulty' => 'Easy', 'savings_level' => 'High'],
-    ['title' => 'Close Windows When AC is On', 'message' => 'Always keep doors and windows shut when the air conditioner is running. Open gaps force the compressor to work harder to maintain temperature, wasting significant energy and increasing your bill.', 'category' => 'Air Conditioning', 'icon' => 'lock-closed-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
-    ['title' => 'Clean AC Filters Monthly', 'message' => 'Dust buildup on AC filters restricts airflow, forcing the unit to consume more power. Cleaning or replacing filters every month can improve efficiency by 5-15% and extend the life of the unit.', 'category' => 'Air Conditioning', 'icon' => 'construct-outline', 'difficulty' => 'Medium', 'savings_level' => 'Moderate'],
-    ['title' => 'Use Fan Mode First', 'message' => 'Before switching to cooling mode, try running your AC on fan mode for the first 10 minutes. This circulates existing cool air and reduces the time the compressor needs to run at full power.', 'category' => 'Air Conditioning', 'icon' => 'leaf-outline', 'difficulty' => 'Easy', 'savings_level' => 'Low'],
+    // 1. General Energy Saving
+    ['title' => 'Power Down When Unneeded', 'message' => 'Turn off electrical equipment when it is no longer needed to reduce overall electricity consumption.', 'category' => 'General Energy Saving', 'icon' => 'power-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Lights Out in Empty Rooms', 'message' => 'Avoid leaving lights on in unoccupied areas. Simply flicking the switch when you leave saves consistent energy.', 'category' => 'General Energy Saving', 'icon' => 'bulb-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Build Daily Habits', 'message' => 'Make energy-saving practices a natural part of your daily routine for long-term reduction in overall consumption.', 'category' => 'General Energy Saving', 'icon' => 'calendar-outline', 'difficulty' => 'Easy', 'savings_level' => 'High'],
+    ['title' => 'Minimize Unnecessary Usage', 'message' => 'Reduce unnecessary electricity use whenever possible. Small reductions in operating times make a big difference.', 'category' => 'General Energy Saving', 'icon' => 'trending-down-outline', 'difficulty' => 'Medium', 'savings_level' => 'Moderate'],
+    ['title' => 'Embrace Natural Daylight', 'message' => 'Use natural daylight when practical. Open your curtains and enjoy the sun instead of using artificial lighting.', 'category' => 'General Energy Saving', 'icon' => 'sunny-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Don\'t Leave Devices Idle', 'message' => 'Avoid keeping electrical devices running when they are not actively being used.', 'category' => 'General Energy Saving', 'icon' => 'pause-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Review Your Habits', 'message' => 'Review your electricity habits regularly to identify new areas where you can reduce unnecessary power draw.', 'category' => 'General Energy Saving', 'icon' => 'search-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Encourage Housemates', 'message' => 'Encourage everyone in the household or room to practice energy conservation together.', 'category' => 'General Energy Saving', 'icon' => 'people-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Consistency is Key', 'message' => 'Make small energy-saving changes consistently rather than occasionally for the best overall impact.', 'category' => 'General Energy Saving', 'icon' => 'repeat-outline', 'difficulty' => 'Easy', 'savings_level' => 'High'],
+    ['title' => 'Track Your Progress', 'message' => 'Monitor your overall consumption in Wattipid to see whether your daily habits are improving over time.', 'category' => 'General Energy Saving', 'icon' => 'analytics-outline', 'difficulty' => 'Easy', 'savings_level' => 'High'],
 
-    // ======================== FAN USAGE ========================
-    ['title' => 'Use Fans Instead of AC', 'message' => 'A ceiling or standing fan uses only 50-75 watts compared to an air conditioner that uses 900-1500 watts. On mild days, using a fan alone can cut your cooling costs by over 90%.', 'category' => 'Fan Usage', 'icon' => 'leaf-outline', 'difficulty' => 'Easy', 'savings_level' => 'High'],
-    ['title' => 'Set Fan to Medium Speed', 'message' => 'Running your fan on medium speed instead of high can save energy while still providing adequate airflow. The difference in comfort is minimal but the energy savings add up over a full month.', 'category' => 'Fan Usage', 'icon' => 'speedometer-outline', 'difficulty' => 'Easy', 'savings_level' => 'Low'],
-    ['title' => 'Turn Off Fans When Leaving', 'message' => 'Fans cool people, not rooms. Unlike AC, a fan does not lower the room temperature. Always turn off fans when you leave the room since they provide no benefit when no one is present.', 'category' => 'Fan Usage', 'icon' => 'exit-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
-    ['title' => 'Use Oscillation Mode', 'message' => 'Enable the oscillation feature on your standing fan to distribute air evenly across the room. This allows you to use a lower speed setting while still feeling comfortable airflow.', 'category' => 'Fan Usage', 'icon' => 'sync-outline', 'difficulty' => 'Easy', 'savings_level' => 'Low'],
-    ['title' => 'Combine Fan with AC', 'message' => 'Using a fan together with your AC allows you to set the thermostat 2-3 degrees higher while maintaining the same comfort level. The fan circulates cool air efficiently, reducing AC workload significantly.', 'category' => 'Fan Usage', 'icon' => 'git-merge-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    // 2. Consumption Monitoring
+    ['title' => 'Check Daily Usage', 'message' => 'Check your daily electricity consumption regularly to stay informed about your overall energy profile.', 'category' => 'Consumption Monitoring', 'icon' => 'calendar-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Compare with Yesterday', 'message' => 'Compare today\'s consumption with previous days to quickly spot any unusual increases in your usage.', 'category' => 'Consumption Monitoring', 'icon' => 'swap-horizontal-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Review Weekly Trends', 'message' => 'Review your weekly electricity consumption trend to understand your broader habits.', 'category' => 'Consumption Monitoring', 'icon' => 'stats-chart-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Track Monthly Consumption', 'message' => 'Monitor your monthly electricity consumption report to see the long-term impact of your conservation efforts.', 'category' => 'Consumption Monitoring', 'icon' => 'calendar-number-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Watch for Unusual Spikes', 'message' => 'Pay close attention to unusual increases in your overall consumption and try to recall any changes in your routine.', 'category' => 'Consumption Monitoring', 'icon' => 'alert-circle-outline', 'difficulty' => 'Medium', 'savings_level' => 'Moderate'],
+    ['title' => 'Record High Usage Periods', 'message' => 'Take note of the specific times when your electricity usage is noticeably higher.', 'category' => 'Consumption Monitoring', 'icon' => 'pencil-outline', 'difficulty' => 'Medium', 'savings_level' => 'Moderate'],
+    ['title' => 'Understand Your Habits', 'message' => 'Use Wattipid\'s consumption trends to build a better understanding of your overall electricity habits.', 'category' => 'Consumption Monitoring', 'icon' => 'book-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Measure Your Changes', 'message' => 'Compare different consumption periods to accurately measure if your new habits are making a difference.', 'category' => 'Consumption Monitoring', 'icon' => 'bar-chart-outline', 'difficulty' => 'Medium', 'savings_level' => 'Moderate'],
+    ['title' => 'Set Realistic Goals', 'message' => 'Set a realistic and achievable goal for reducing your overall electricity consumption.', 'category' => 'Consumption Monitoring', 'icon' => 'flag-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Stay Aware with Analytics', 'message' => 'Use Wattipid analytics to stay continuously aware of your electricity usage patterns.', 'category' => 'Consumption Monitoring', 'icon' => 'pie-chart-outline', 'difficulty' => 'Easy', 'savings_level' => 'High'],
 
-    // ======================== CHARGING DEVICES ========================
-    ['title' => 'Unplug Chargers When Full', 'message' => 'Phone and laptop chargers continue drawing phantom power even after your device reaches 100%. Unplugging chargers when fully charged prevents unnecessary standby energy consumption throughout the day.', 'category' => 'Charging Devices', 'icon' => 'battery-full-outline', 'difficulty' => 'Easy', 'savings_level' => 'Low'],
-    ['title' => 'Charge During Off-Peak Hours', 'message' => 'Charging your devices during off-peak hours (late night or early morning) can help reduce strain on the dormitory electrical system and may result in more stable voltage delivery to your devices.', 'category' => 'Charging Devices', 'icon' => 'moon-outline', 'difficulty' => 'Easy', 'savings_level' => 'Low'],
-    ['title' => 'Avoid Overnight Charging', 'message' => 'Leaving your phone plugged in all night wastes energy for 5-6 hours after it reaches full charge. Modern phones charge fully in 1-2 hours, so plug in before bed and unplug before sleeping.', 'category' => 'Charging Devices', 'icon' => 'alert-circle-outline', 'difficulty' => 'Easy', 'savings_level' => 'Low'],
-    ['title' => 'Use Original Chargers', 'message' => 'Non-certified chargers can be less energy efficient and may draw more power than necessary. Using the original manufacturer charger ensures optimal charging speed and minimizes wasted energy.', 'category' => 'Charging Devices', 'icon' => 'checkmark-circle-outline', 'difficulty' => 'Easy', 'savings_level' => 'Low'],
-    ['title' => 'Use a Smart Power Strip', 'message' => 'A smart power strip automatically cuts power to devices when they are fully charged or in standby mode. This eliminates phantom loads from multiple chargers and adapters plugged into a single outlet.', 'category' => 'Charging Devices', 'icon' => 'flash-outline', 'difficulty' => 'Medium', 'savings_level' => 'Moderate'],
+    // 3. Daily Energy Habits
+    ['title' => 'Lights Off When Leaving', 'message' => 'Always turn off the lights when leaving a room. It is a simple daily habit that yields constant savings.', 'category' => 'Daily Energy Habits', 'icon' => 'bulb-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Switch Off When Done', 'message' => 'Switch off equipment entirely when it is no longer needed to prevent ongoing power draw.', 'category' => 'Daily Energy Habits', 'icon' => 'power-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Reduce Daytime Usage', 'message' => 'Avoid unnecessary electricity use during the day when natural light and ventilation might suffice.', 'category' => 'Daily Energy Habits', 'icon' => 'sunny-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Utilize Natural Light', 'message' => 'Make full use of natural lighting whenever it is available to reduce reliance on indoor lighting.', 'category' => 'Daily Energy Habits', 'icon' => 'partly-sunny-outline', 'difficulty' => 'Easy', 'savings_level' => 'Low'],
+    ['title' => 'Final Room Check', 'message' => 'Check that unused electrical equipment is properly switched off before leaving the house.', 'category' => 'Daily Energy Habits', 'icon' => 'checkmark-done-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'No Purposeless Running', 'message' => 'Avoid keeping devices running without a clear purpose.', 'category' => 'Daily Energy Habits', 'icon' => 'stop-circle-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Build a Check Habit', 'message' => 'Develop a strong habit of checking electricity use before stepping out of a room.', 'category' => 'Daily Energy Habits', 'icon' => 'eye-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Use Only When Necessary', 'message' => 'Consume electricity only when absolutely necessary to optimize your overall daily footprint.', 'category' => 'Daily Energy Habits', 'icon' => 'leaf-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Involve Your Housemates', 'message' => 'Encourage everyone sharing the space to practice these daily energy-saving habits.', 'category' => 'Daily Energy Habits', 'icon' => 'people-circle-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Review Daily Patterns', 'message' => 'Review your daily consumption in Wattipid to better understand your typical usage pattern.', 'category' => 'Daily Energy Habits', 'icon' => 'calendar-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
 
-    // ======================== KITCHEN APPLIANCES ========================
-    ['title' => 'Use Electric Kettle Efficiently', 'message' => 'Only boil the amount of water you actually need. Filling a full kettle when you only need one cup wastes energy heating unnecessary water. An electric kettle is still more efficient than a stove.', 'category' => 'Kitchen Appliances', 'icon' => 'cafe-outline', 'difficulty' => 'Easy', 'savings_level' => 'Low'],
-    ['title' => 'Use Rice Cooker Timer', 'message' => 'If your rice cooker has a keep-warm function, avoid leaving it on for hours after cooking. The keep-warm mode can consume 30-40 watts continuously. Transfer rice to a container and unplug the cooker.', 'category' => 'Kitchen Appliances', 'icon' => 'restaurant-outline', 'difficulty' => 'Easy', 'savings_level' => 'Low'],
-    ['title' => 'Microwave Over Stove', 'message' => 'A microwave uses significantly less energy than an electric stove for reheating food. It heats food directly rather than heating a burner first, making it up to 80% more energy efficient for small portions.', 'category' => 'Kitchen Appliances', 'icon' => 'radio-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
-    ['title' => 'Defrost Food Naturally', 'message' => 'Instead of using your microwave to defrost frozen food, plan ahead and move it to the refrigerator the night before. This saves the microwave energy and helps keep your fridge cool at the same time.', 'category' => 'Kitchen Appliances', 'icon' => 'time-outline', 'difficulty' => 'Easy', 'savings_level' => 'Low'],
-    ['title' => 'Match Pot Size to Burner', 'message' => 'Using a small pot on a large electric burner wastes up to 40% of the heat energy. Always match your cookware size to the burner to ensure maximum heat transfer and minimum energy waste.', 'category' => 'Kitchen Appliances', 'icon' => 'resize-outline', 'difficulty' => 'Easy', 'savings_level' => 'Low'],
+    // 4. Weekly Consumption
+    ['title' => 'Compare Weeks', 'message' => 'Compare this week\'s overall consumption with the previous week to see if you are trending up or down.', 'category' => 'Weekly Consumption', 'icon' => 'swap-horizontal-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Spot Significant Changes', 'message' => 'Look for significant changes in your overall electricity usage from week to week.', 'category' => 'Weekly Consumption', 'icon' => 'analytics-outline', 'difficulty' => 'Medium', 'savings_level' => 'Moderate'],
+    ['title' => 'Identify High Usage Days', 'message' => 'Review which specific days of the week had higher overall consumption to identify patterns.', 'category' => 'Weekly Consumption', 'icon' => 'calendar-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Check Your Trajectory', 'message' => 'Check whether your weekly consumption is generally increasing or decreasing over time.', 'category' => 'Weekly Consumption', 'icon' => 'trending-up-outline', 'difficulty' => 'Medium', 'savings_level' => 'Moderate'],
+    ['title' => 'Set a Weekly Goal', 'message' => 'Set a realistic weekly electricity-saving goal to keep yourself motivated.', 'category' => 'Weekly Consumption', 'icon' => 'flag-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'End-of-Week Review', 'message' => 'Review your energy-saving habits at the end of each week to see what worked well.', 'category' => 'Weekly Consumption', 'icon' => 'checkbox-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Spot Repeated Highs', 'message' => 'Look for repeated periods of unusually high consumption across multiple weeks.', 'category' => 'Weekly Consumption', 'icon' => 'search-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Plan for Next Week', 'message' => 'Try consciously reducing unnecessary electricity use during the following week based on this week\'s data.', 'category' => 'Weekly Consumption', 'icon' => 'calendar-number-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Track Habit Impact', 'message' => 'Track whether your new energy-saving efforts actually produce a lower overall weekly trend.', 'category' => 'Weekly Consumption', 'icon' => 'bar-chart-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Improve Based on Data', 'message' => 'Use your weekly consumption data as a factual guide to improve your electricity habits.', 'category' => 'Weekly Consumption', 'icon' => 'bulb-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
 
-    // ======================== REFRIGERATOR USAGE ========================
-    ['title' => 'Keep Fridge 70% Full', 'message' => 'A refrigerator works most efficiently when it is about 70% full. The thermal mass of the stored food helps maintain temperature, reducing how often the compressor needs to cycle on.', 'category' => 'Refrigerator Usage', 'icon' => 'cube-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
-    ['title' => 'Don\'t Put Hot Food Inside', 'message' => 'Placing hot or warm food directly into the refrigerator forces the compressor to work overtime to bring the internal temperature back down. Always let food cool to room temperature first.', 'category' => 'Refrigerator Usage', 'icon' => 'thermometer-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
-    ['title' => 'Check Door Seals', 'message' => 'A loose or damaged refrigerator door seal allows cold air to leak out, forcing the compressor to run more frequently. Test your seal by closing the door on a piece of paper — if it slides out easily, the seal needs replacement.', 'category' => 'Refrigerator Usage', 'icon' => 'shield-checkmark-outline', 'difficulty' => 'Medium', 'savings_level' => 'Moderate'],
-    ['title' => 'Set Correct Temperature', 'message' => 'Set your refrigerator to 3-5°C and your freezer to -18°C. Each degree colder than necessary increases energy consumption by approximately 5%. Use a thermometer to verify accuracy.', 'category' => 'Refrigerator Usage', 'icon' => 'options-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
-    ['title' => 'Keep Fridge Away from Heat', 'message' => 'Position your refrigerator away from direct sunlight, stoves, and other heat sources. External heat forces the compressor to work harder, increasing energy consumption by up to 15%.', 'category' => 'Refrigerator Usage', 'icon' => 'sunny-outline', 'difficulty' => 'Medium', 'savings_level' => 'Moderate'],
+    // 5. Monthly Consumption
+    ['title' => 'End-of-Month Review', 'message' => 'Review your total electricity consumption at the end of each month to see the big picture.', 'category' => 'Monthly Consumption', 'icon' => 'calendar-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Compare Months', 'message' => 'Compare your current month with previous months to identify seasonal or habit-based changes.', 'category' => 'Monthly Consumption', 'icon' => 'swap-vertical-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Identify Broad Trends', 'message' => 'Identify whether your monthly consumption is trending upward or downward.', 'category' => 'Monthly Consumption', 'icon' => 'trending-down-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Set a Monthly Target', 'message' => 'Set a realistic monthly consumption goal and use Wattipid to stay on track.', 'category' => 'Monthly Consumption', 'icon' => 'flag-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Adapt Based on Trends', 'message' => 'Review and adapt your energy-saving habits based on your monthly trend report.', 'category' => 'Monthly Consumption', 'icon' => 'sync-outline', 'difficulty' => 'Medium', 'savings_level' => 'Moderate'],
+    ['title' => 'Investigate Broad Changes', 'message' => 'Investigate unusual changes in overall consumption without assuming a specific cause or appliance.', 'category' => 'Monthly Consumption', 'icon' => 'search-outline', 'difficulty' => 'Hard', 'savings_level' => 'High'],
+    ['title' => 'Plan Better Habits', 'message' => 'Use monthly analytics to plan better, long-term electricity-saving habits.', 'category' => 'Monthly Consumption', 'icon' => 'bulb-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Track Long-Term Progress', 'message' => 'Track your progress from month to month to ensure your efforts are sustainable.', 'category' => 'Monthly Consumption', 'icon' => 'stats-chart-outline', 'difficulty' => 'Easy', 'savings_level' => 'High'],
+    ['title' => 'Monitor Reductions', 'message' => 'Monitor consistent reductions in overall electricity consumption and celebrate your progress.', 'category' => 'Monthly Consumption', 'icon' => 'checkmark-circle-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Use Reports as a Guide', 'message' => 'Use your monthly consumption report as a factual guide for improving future electricity usage.', 'category' => 'Monthly Consumption', 'icon' => 'document-text-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
 
-    // ======================== LAUNDRY ========================
-    ['title' => 'Wash with Cold Water', 'message' => 'About 90% of the energy used by a washing machine goes to heating water. Washing clothes in cold water is just as effective for regular loads and dramatically reduces electricity consumption per wash cycle.', 'category' => 'Laundry', 'icon' => 'water-outline', 'difficulty' => 'Easy', 'savings_level' => 'High'],
-    ['title' => 'Wash Full Loads Only', 'message' => 'Running a half-empty washing machine wastes the same amount of energy as a full load. Wait until you have enough clothes for a complete load before starting the machine to maximize efficiency.', 'category' => 'Laundry', 'icon' => 'basket-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
-    ['title' => 'Use High Spin Speed', 'message' => 'Selecting a higher spin speed during the wash cycle removes more water from your clothes. This means less time needed for drying, whether you use a dryer or hang clothes to air dry.', 'category' => 'Laundry', 'icon' => 'sync-circle-outline', 'difficulty' => 'Easy', 'savings_level' => 'Low'],
-    ['title' => 'Air Dry When Possible', 'message' => 'Electric dryers consume 2,000-5,000 watts per cycle. Hanging clothes on a drying rack or clothesline costs zero electricity and is gentler on fabrics, extending the life of your clothing.', 'category' => 'Laundry', 'icon' => 'partly-sunny-outline', 'difficulty' => 'Easy', 'savings_level' => 'High'],
-    ['title' => 'Clean Lint Filters', 'message' => 'If you use a dryer, clean the lint filter before every load. A clogged filter restricts airflow, forcing the dryer to run longer and consume more energy to dry the same amount of clothes.', 'category' => 'Laundry', 'icon' => 'funnel-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    // 6. High Consumption Awareness
+    ['title' => 'Review High Usage Periods', 'message' => 'Review your usage when overall consumption is higher than usual to identify potential causes.', 'category' => 'High Consumption Awareness', 'icon' => 'alert-circle-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Check for Equipment Left On', 'message' => 'Check whether unnecessary electrical equipment was accidentally left running during high usage times.', 'category' => 'High Consumption Awareness', 'icon' => 'power-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Reflect on Recent Habits', 'message' => 'Review your recent electricity-use habits immediately after noticing an unusual increase.', 'category' => 'High Consumption Awareness', 'icon' => 'time-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Compare High Periods', 'message' => 'Compare the high-consumption period with previous, normal periods to gauge the difference.', 'category' => 'High Consumption Awareness', 'icon' => 'bar-chart-outline', 'difficulty' => 'Medium', 'savings_level' => 'Moderate'],
+    ['title' => 'Avoid Appliance Assumptions', 'message' => 'Do not assume that one specific appliance caused the increase; look at your overall habits.', 'category' => 'High Consumption Awareness', 'icon' => 'bulb-outline', 'difficulty' => 'Medium', 'savings_level' => 'Moderate'],
+    ['title' => 'Spot High Usage Patterns', 'message' => 'Look for repeated patterns of high overall consumption throughout the week.', 'category' => 'High Consumption Awareness', 'icon' => 'repeat-outline', 'difficulty' => 'Hard', 'savings_level' => 'High'],
+    ['title' => 'Reduce Usage Next Time', 'message' => 'Make an effort to reduce unnecessary electricity usage during future high-consumption periods.', 'category' => 'High Consumption Awareness', 'icon' => 'trending-down-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Monitor Return to Normal', 'message' => 'Monitor the following days to determine whether your overall consumption successfully returns to normal.', 'category' => 'High Consumption Awareness', 'icon' => 'eye-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Set Awareness Goals', 'message' => 'Set a personal awareness goal to be more mindful when unusually high overall consumption occurs.', 'category' => 'High Consumption Awareness', 'icon' => 'flag-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Use Trends to Learn', 'message' => 'Use Wattipid trends to become more deeply aware of subtle changes in your electricity usage.', 'category' => 'High Consumption Awareness', 'icon' => 'analytics-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
 
-    // ======================== STUDY SETUP ========================
-    ['title' => 'Use Laptop Over Desktop', 'message' => 'Laptops consume 30-70 watts compared to 200-500 watts for desktop computers with monitors. For studying and basic tasks, a laptop is significantly more energy efficient and portable.', 'category' => 'Study Setup', 'icon' => 'laptop-outline', 'difficulty' => 'Easy', 'savings_level' => 'High'],
-    ['title' => 'Lower Screen Brightness', 'message' => 'Reducing your laptop or monitor brightness from 100% to 60-70% can decrease display energy consumption by up to 30%. Your eyes will also experience less strain during long study sessions.', 'category' => 'Study Setup', 'icon' => 'contrast-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
-    ['title' => 'Enable Power Saver Mode', 'message' => 'Activate your laptop or computer power saver mode when studying. This reduces CPU performance slightly (unnoticeable for documents and browsing) while significantly reducing energy draw.', 'category' => 'Study Setup', 'icon' => 'battery-half-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
-    ['title' => 'Use Task Lighting', 'message' => 'Instead of lighting the entire room, use a small LED desk lamp focused on your study area. A 5-watt LED desk lamp provides sufficient light for reading while using a fraction of the energy of overhead lights.', 'category' => 'Study Setup', 'icon' => 'flashlight-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
-    ['title' => 'Turn Off Monitor During Breaks', 'message' => 'If you take a study break longer than 10 minutes, turn off your monitor. Screen savers do NOT save energy — only turning off the display actually reduces consumption.', 'category' => 'Study Setup', 'icon' => 'desktop-outline', 'difficulty' => 'Easy', 'savings_level' => 'Low'],
+    // 7. Electricity Conservation
+    ['title' => 'Turn Off When Unused', 'message' => 'Turn off unused lights and electrical equipment immediately when they are no longer providing value.', 'category' => 'Electricity Conservation', 'icon' => 'power-outline', 'difficulty' => 'Easy', 'savings_level' => 'High'],
+    ['title' => 'Maximize Natural Light', 'message' => 'Make better use of available natural light during the day to minimize artificial lighting costs.', 'category' => 'Electricity Conservation', 'icon' => 'sunny-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Minimize Standby Use', 'message' => 'Avoid unnecessary standby usage where practical by unplugging equipment entirely.', 'category' => 'Electricity Conservation', 'icon' => 'flash-off-outline', 'difficulty' => 'Medium', 'savings_level' => 'Low'],
+    ['title' => 'Use Only When Needed', 'message' => 'Make a conscious effort to use electricity only when it is actually needed.', 'category' => 'Electricity Conservation', 'icon' => 'leaf-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Be Consistent', 'message' => 'Practice energy-saving habits consistently to ensure long-term conservation success.', 'category' => 'Electricity Conservation', 'icon' => 'repeat-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Reduce Operating Time', 'message' => 'Reduce unnecessary operating time for electrical equipment to directly lower your total draw.', 'category' => 'Electricity Conservation', 'icon' => 'time-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Promote Conservation', 'message' => 'Encourage other occupants to conserve electricity alongside you.', 'category' => 'Electricity Conservation', 'icon' => 'people-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Don\'t Light Empty Spaces', 'message' => 'Avoid wasting electricity in unoccupied areas like empty rooms, bathrooms, or hallways.', 'category' => 'Electricity Conservation', 'icon' => 'bulb-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Review Habits Regularly', 'message' => 'Review your electricity habits regularly to find new ways to conserve power.', 'category' => 'Electricity Conservation', 'icon' => 'search-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Measure Conservation Efforts', 'message' => 'Monitor your overall consumption data to objectively measure your conservation efforts.', 'category' => 'Electricity Conservation', 'icon' => 'bar-chart-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
 
-    // ======================== SHARED ROOM EFFICIENCY ========================
-    ['title' => 'Coordinate AC Usage', 'message' => 'If you share a room, coordinate with your roommate on AC usage schedules. Agreeing on a comfortable temperature and operating hours prevents one person from running the AC all day.', 'category' => 'Shared Room Efficiency', 'icon' => 'people-outline', 'difficulty' => 'Easy', 'savings_level' => 'High'],
-    ['title' => 'Share Common Appliances', 'message' => 'Instead of each roommate having separate rice cookers, kettles, or mini-fridges, share one unit. This reduces the total number of appliances drawing power in your room.', 'category' => 'Shared Room Efficiency', 'icon' => 'git-network-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
-    ['title' => 'Assign an Energy Champion', 'message' => 'Designate one roommate as the weekly energy monitor. Their job is to ensure all lights, fans, and appliances are off before everyone leaves the room, creating accountability.', 'category' => 'Shared Room Efficiency', 'icon' => 'ribbon-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
-    ['title' => 'Use Shared Study Hours', 'message' => 'Study together during the same hours to share the lighting and AC. If both roommates need the lights on at different times, the room uses power for twice as long.', 'category' => 'Shared Room Efficiency', 'icon' => 'book-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
-    ['title' => 'Set Room Energy Goals', 'message' => 'Use the Wattipid daily consumption limit feature to set a shared room energy goal. Track your progress together on the dashboard and celebrate when you stay under budget.', 'category' => 'Shared Room Efficiency', 'icon' => 'trophy-outline', 'difficulty' => 'Easy', 'savings_level' => 'High'],
+    // 8. Energy Efficiency
+    ['title' => 'Choose Efficient Replacements', 'message' => 'Consider energy-efficient products when replacing old or broken electrical equipment.', 'category' => 'Energy Efficiency', 'icon' => 'cart-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Look for Efficiency Labels', 'message' => 'Look for recognized energy-efficiency labels when purchasing new equipment.', 'category' => 'Energy Efficiency', 'icon' => 'pricetag-outline', 'difficulty' => 'Easy', 'savings_level' => 'High'],
+    ['title' => 'Follow Maintenance Guidelines', 'message' => 'Maintain all electrical equipment according to manufacturer recommendations to ensure optimal efficiency.', 'category' => 'Energy Efficiency', 'icon' => 'construct-outline', 'difficulty' => 'Medium', 'savings_level' => 'Moderate'],
+    ['title' => 'Keep Ventilation Clear', 'message' => 'Keep ventilation areas clear where applicable, so equipment doesn\'t have to work harder than necessary.', 'category' => 'Energy Efficiency', 'icon' => 'git-network-outline', 'difficulty' => 'Medium', 'savings_level' => 'Moderate'],
+    ['title' => 'Upgrade to Efficient Lighting', 'message' => 'Use efficient lighting options like LEDs when replacing older, burnt-out lighting.', 'category' => 'Energy Efficiency', 'icon' => 'bulb-outline', 'difficulty' => 'Easy', 'savings_level' => 'High'],
+    ['title' => 'Consider Building Efficiency', 'message' => 'Consider improvements that can increase overall building or room energy efficiency, like better curtains.', 'category' => 'Energy Efficiency', 'icon' => 'home-outline', 'difficulty' => 'Hard', 'savings_level' => 'High'],
+    ['title' => 'Seal Air Leaks', 'message' => 'Seal obvious air leaks around windows and doors where appropriate to maintain indoor temperature efficiently.', 'category' => 'Energy Efficiency', 'icon' => 'shield-checkmark-outline', 'difficulty' => 'Medium', 'savings_level' => 'Moderate'],
+    ['title' => 'Improve Insulation', 'message' => 'Consider insulation improvements where appropriate to reduce overall heating and cooling needs.', 'category' => 'Energy Efficiency', 'icon' => 'layers-outline', 'difficulty' => 'Hard', 'savings_level' => 'High'],
+    ['title' => 'Professional Maintenance', 'message' => 'Have major electrical or cooling systems professionally maintained when needed to restore their efficiency.', 'category' => 'Energy Efficiency', 'icon' => 'build-outline', 'difficulty' => 'Hard', 'savings_level' => 'High'],
+    ['title' => 'Evaluate Long-Term Improvements', 'message' => 'Evaluate energy-efficiency improvements based on their impact on your long-term consumption trends.', 'category' => 'Energy Efficiency', 'icon' => 'analytics-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
 
-    // ======================== GAMING & ENTERTAINMENT ========================
-    ['title' => 'Lower Game Graphics Settings', 'message' => 'High graphics settings force your GPU to draw maximum power. Reducing resolution or detail levels can cut your gaming system power consumption by 30-50% while still providing an enjoyable experience.', 'category' => 'Gaming & Entertainment', 'icon' => 'game-controller-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
-    ['title' => 'Turn Off Gaming PC When Done', 'message' => 'Gaming PCs consume 200-500 watts during use and 10-30 watts on standby. Always fully shut down (not sleep mode) your gaming computer when you are done to eliminate standby power draw.', 'category' => 'Gaming & Entertainment', 'icon' => 'power-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
-    ['title' => 'Use Headphones Over Speakers', 'message' => 'Headphones consume negligible energy compared to powered speakers or soundbars. For late-night gaming or entertainment, headphones save electricity while also being courteous to your roommates.', 'category' => 'Gaming & Entertainment', 'icon' => 'headset-outline', 'difficulty' => 'Easy', 'savings_level' => 'Low'],
-    ['title' => 'Stream on Smaller Screens', 'message' => 'Watching Netflix or YouTube on your phone or tablet uses significantly less power than streaming on a large TV or monitor. A 10-inch tablet uses roughly 5 watts compared to 80+ watts for a 32-inch TV.', 'category' => 'Gaming & Entertainment', 'icon' => 'phone-portrait-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
-    ['title' => 'Set Auto-Sleep on Consoles', 'message' => 'Configure your gaming console (PS5, Xbox, Switch) to automatically enter rest mode after 30 minutes of inactivity. This prevents the console from running at full power when you fall asleep or forget.', 'category' => 'Gaming & Entertainment', 'icon' => 'alarm-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    // 9. Responsible Electricity Use
+    ['title' => 'Switch Off When Leaving', 'message' => 'Switch off electricity immediately when leaving an unoccupied area.', 'category' => 'Responsible Electricity Use', 'icon' => 'log-out-outline', 'difficulty' => 'Easy', 'savings_level' => 'High'],
+    ['title' => 'Avoid Unnecessary Consumption', 'message' => 'Take active steps to avoid unnecessary electricity consumption throughout the day.', 'category' => 'Responsible Electricity Use', 'icon' => 'shield-half-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Use Equipment Responsibly', 'message' => 'Use electrical equipment responsibly, ensuring it is only running when actively required.', 'category' => 'Responsible Electricity Use', 'icon' => 'hardware-chip-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Encourage Shared Responsibility', 'message' => 'Encourage everyone sharing the space to take responsibility and conserve electricity.', 'category' => 'Responsible Electricity Use', 'icon' => 'people-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Stop Purposeless Operation', 'message' => 'Avoid leaving devices operating without a clear purpose or user present.', 'category' => 'Responsible Electricity Use', 'icon' => 'stop-circle-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Perform Room Checks', 'message' => 'Check rooms thoroughly before leaving to ensure all unnecessary electricity is turned off.', 'category' => 'Responsible Electricity Use', 'icon' => 'checkbox-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Routine Conservation', 'message' => 'Make energy conservation a seamless part of your daily routine.', 'category' => 'Responsible Electricity Use', 'icon' => 'calendar-outline', 'difficulty' => 'Easy', 'savings_level' => 'High'],
+    ['title' => 'Maintain Overall Awareness', 'message' => 'Be consistently aware of your overall electricity consumption level.', 'category' => 'Responsible Electricity Use', 'icon' => 'eye-outline', 'difficulty' => 'Medium', 'savings_level' => 'Moderate'],
+    ['title' => 'Use Data for Improvement', 'message' => 'Use your real consumption data to continuously improve your habits.', 'category' => 'Responsible Electricity Use', 'icon' => 'stats-chart-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Share Good Practices', 'message' => 'Share effective energy-saving practices with other occupants to multiply your impact.', 'category' => 'Responsible Electricity Use', 'icon' => 'share-social-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
 
-    // ======================== APPLIANCE MAINTENANCE ========================
-    ['title' => 'Clean Appliance Vents', 'message' => 'Dust accumulation on the vents and coils of appliances like refrigerators and AC units forces them to work harder. Regular cleaning every 2-3 months maintains peak efficiency and prevents overheating.', 'category' => 'Appliance Maintenance', 'icon' => 'build-outline', 'difficulty' => 'Medium', 'savings_level' => 'Moderate'],
-    ['title' => 'Replace Old Extension Cords', 'message' => 'Worn or low-quality extension cords can cause energy loss through resistance heating. Replace frayed or warm-to-the-touch extension cords with new, properly rated ones to ensure safe and efficient power delivery.', 'category' => 'Appliance Maintenance', 'icon' => 'swap-horizontal-outline', 'difficulty' => 'Medium', 'savings_level' => 'Low'],
-    ['title' => 'Inspect Wiring Connections', 'message' => 'Loose electrical connections generate heat and waste energy. Periodically check that all plugs fit snugly in outlets and report any sparking, buzzing, or warm outlets to your landlord immediately.', 'category' => 'Appliance Maintenance', 'icon' => 'warning-outline', 'difficulty' => 'Medium', 'savings_level' => 'Low'],
-    ['title' => 'Defrost Freezer Regularly', 'message' => 'Ice buildup thicker than 5mm inside a freezer acts as insulation, forcing the compressor to work harder. Defrost your freezer when ice buildup becomes noticeable to maintain optimal energy efficiency.', 'category' => 'Appliance Maintenance', 'icon' => 'snow-outline', 'difficulty' => 'Medium', 'savings_level' => 'Moderate'],
-    ['title' => 'Service AC Annually', 'message' => 'An annual professional servicing of your air conditioner ensures refrigerant levels are correct, coils are clean, and the compressor is functioning optimally. A well-maintained AC uses 15-20% less energy.', 'category' => 'Appliance Maintenance', 'icon' => 'hammer-outline', 'difficulty' => 'Hard', 'savings_level' => 'High'],
+    // 10. Energy-Saving Practices
+    ['title' => 'Prioritize Daylight', 'message' => 'Use natural daylight whenever practical instead of turning on interior lighting.', 'category' => 'Energy-Saving Practices', 'icon' => 'sunny-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Turn Off Unused Lights', 'message' => 'Make a firm rule to turn off unused lights in any room you are not in.', 'category' => 'Energy-Saving Practices', 'icon' => 'bulb-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Use Power Strips', 'message' => 'Use power strips to make switching off groups of electronics easier and faster where appropriate.', 'category' => 'Energy-Saving Practices', 'icon' => 'flash-outline', 'difficulty' => 'Medium', 'savings_level' => 'Moderate'],
+    ['title' => 'Avoid Standby Waste', 'message' => 'Avoid unnecessary standby electricity use by unplugging devices completely when not in use.', 'category' => 'Energy-Saving Practices', 'icon' => 'power-outline', 'difficulty' => 'Medium', 'savings_level' => 'Low'],
+    ['title' => 'Maintain for Efficiency', 'message' => 'Maintain equipment properly to support its efficient operation over time.', 'category' => 'Energy-Saving Practices', 'icon' => 'construct-outline', 'difficulty' => 'Medium', 'savings_level' => 'Moderate'],
+    ['title' => 'Clear Cooling Vents', 'message' => 'Keep cooling and ventilation areas unobstructed where applicable to prevent equipment from overworking.', 'category' => 'Energy-Saving Practices', 'icon' => 'snow-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Purchase Efficient Replacements', 'message' => 'Consider energy-efficient products when purchasing replacements for old items.', 'category' => 'Energy-Saving Practices', 'icon' => 'cart-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Minimize Operating Time', 'message' => 'Avoid unnecessary operating time for any electrical equipment.', 'category' => 'Energy-Saving Practices', 'icon' => 'time-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Review Practices Regularly', 'message' => 'Review your personal electricity-saving practices regularly to see where you can improve.', 'category' => 'Energy-Saving Practices', 'icon' => 'search-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Combine Small Actions', 'message' => 'Combine several small energy-saving actions instead of relying on just one change.', 'category' => 'Energy-Saving Practices', 'icon' => 'git-merge-outline', 'difficulty' => 'Easy', 'savings_level' => 'High'],
 
-    // ======================== DAILY HABITS ========================
-    ['title' => 'Switch to LED Bulbs', 'message' => 'LED bulbs use up to 80% less electricity than traditional incandescent bulbs and last 25 times longer. Replacing just 5 incandescent bulbs with LEDs can save over 500 kWh per year.', 'category' => 'Daily Habits', 'icon' => 'bulb-outline', 'difficulty' => 'Easy', 'savings_level' => 'High'],
-    ['title' => 'Turn Off Lights When Leaving', 'message' => 'Make it a habit to always switch off lights when you leave a room. Even energy-efficient LED lights waste electricity when illuminating an empty space. A simple habit that saves significantly over time.', 'category' => 'Daily Habits', 'icon' => 'log-out-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
-    ['title' => 'Use Natural Light', 'message' => 'Open curtains and blinds during the day to take advantage of natural sunlight. Position your study desk near a window to reduce the need for artificial lighting during daytime hours.', 'category' => 'Daily Habits', 'icon' => 'sunny-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
-    ['title' => 'Unplug Idle Electronics', 'message' => 'TVs, chargers, and game consoles on standby collectively account for up to 10% of household energy use. Unplug devices you are not actively using, especially before leaving your room for class.', 'category' => 'Daily Habits', 'icon' => 'flash-off-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
-    ['title' => 'Monitor Your Consumption Daily', 'message' => 'Check your Wattipid dashboard daily to understand your energy patterns. Awareness is the first step to conservation. Set daily consumption limits and track whether you stay within your budget.', 'category' => 'Daily Habits', 'icon' => 'analytics-outline', 'difficulty' => 'Easy', 'savings_level' => 'High'],
-    ['title' => 'Take Shorter Showers', 'message' => 'If your dormitory uses an electric water heater, shorter showers directly reduce electricity consumption. Reducing shower time from 15 to 5 minutes can save up to 3 kWh per day.', 'category' => 'Daily Habits', 'icon' => 'rainy-outline', 'difficulty' => 'Easy', 'savings_level' => 'High'],
+    // 11. Consumption Goals
+    ['title' => 'Set Realistic Monthly Goals', 'message' => 'Set a realistic monthly electricity-consumption goal based on your past data.', 'category' => 'Consumption Goals', 'icon' => 'flag-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Compare with Past Periods', 'message' => 'Compare your current consumption with your previous period to set an appropriate target.', 'category' => 'Consumption Goals', 'icon' => 'swap-horizontal-outline', 'difficulty' => 'Medium', 'savings_level' => 'Moderate'],
+    ['title' => 'Set a Weekly Reduction Goal', 'message' => 'Set a weekly goal specifically for reducing unnecessary electricity usage.', 'category' => 'Consumption Goals', 'icon' => 'calendar-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Track via Wattipid', 'message' => 'Consistently track your progress towards your goals through the Wattipid dashboard.', 'category' => 'Consumption Goals', 'icon' => 'analytics-outline', 'difficulty' => 'Easy', 'savings_level' => 'High'],
+    ['title' => 'Avoid Unrealistic Targets', 'message' => 'Avoid setting unrealistic reduction targets that might be impossible to maintain long-term.', 'category' => 'Consumption Goals', 'icon' => 'alert-circle-outline', 'difficulty' => 'Medium', 'savings_level' => 'Moderate'],
+    ['title' => 'Review Goals Regularly', 'message' => 'Review and adjust your goal when your daily routine or consumption pattern significantly changes.', 'category' => 'Consumption Goals', 'icon' => 'sync-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Use Actual Data', 'message' => 'Always use your actual past consumption data when setting future goals.', 'category' => 'Consumption Goals', 'icon' => 'stats-chart-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Monitor Consistent Improvements', 'message' => 'Monitor your dashboard for consistent improvements in your overall consumption.', 'category' => 'Consumption Goals', 'icon' => 'trending-down-outline', 'difficulty' => 'Easy', 'savings_level' => 'High'],
+    ['title' => 'Identify Helpful Habits', 'message' => 'Identify the specific habits that actively help you maintain lower consumption and reinforce them.', 'category' => 'Consumption Goals', 'icon' => 'checkmark-circle-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Update Long-Term Goals', 'message' => 'Update your goals based on your long-term consumption trend rather than a single good day.', 'category' => 'Consumption Goals', 'icon' => 'calendar-number-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+
+    // 12. Energy Awareness
+    ['title' => 'Learn Your Trends', 'message' => 'Learn how your overall electricity consumption naturally changes over time.', 'category' => 'Energy Awareness', 'icon' => 'bar-chart-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Check Regularly, Not Just at Billing', 'message' => 'Check your consumption regularly on Wattipid instead of waiting until your bill arrives.', 'category' => 'Energy Awareness', 'icon' => 'eye-outline', 'difficulty' => 'Easy', 'savings_level' => 'High'],
+    ['title' => 'Notice Unusual Changes', 'message' => 'Pay close attention to any unusual changes in your overall consumption pattern.', 'category' => 'Energy Awareness', 'icon' => 'alert-circle-outline', 'difficulty' => 'Medium', 'savings_level' => 'Moderate'],
+    ['title' => 'Compare Different Periods', 'message' => 'Compare your daily, weekly, and monthly electricity usage to get a complete picture.', 'category' => 'Energy Awareness', 'icon' => 'pie-chart-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Understand Habit Impact', 'message' => 'Understand that your total consumption fluctuates depending directly on your usage habits.', 'category' => 'Energy Awareness', 'icon' => 'bulb-outline', 'difficulty' => 'Easy', 'savings_level' => 'Moderate'],
+    ['title' => 'Become More Aware', 'message' => 'Use Wattipid analytics consistently to become more aware of your electricity usage.', 'category' => 'Energy Awareness', 'icon' => 'analytics-outline', 'difficulty' => 'Easy', 'savings_level' => 'High'],
+    ['title' => 'Discuss with Occupants', 'message' => 'Discuss energy-saving practices and overall awareness with other occupants.', 'category' => 'Energy Awareness', 'icon' => 'chatbubbles-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Make Informed Decisions', 'message' => 'Make informed decisions about your energy habits based on actual consumption data.', 'category' => 'Energy Awareness', 'icon' => 'information-circle-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
+    ['title' => 'Remember the Total Focus', 'message' => 'Remember that Wattipid measures total electricity consumption, giving you a holistic view of your habits.', 'category' => 'Energy Awareness', 'icon' => 'hardware-chip-outline', 'difficulty' => 'Easy', 'savings_level' => 'Low'],
+    ['title' => 'Develop Long-Term Habits', 'message' => 'Use your consumption history to develop better, long-term energy awareness and habits.', 'category' => 'Energy Awareness', 'icon' => 'calendar-outline', 'difficulty' => 'Medium', 'savings_level' => 'High'],
 ];
 
-echo "Wattipid Tips Database Seeder\n";
-echo "============================\n\n";
+echo "Wattipid Generalized Tips Database Seeder\n";
+echo "========================================\n\n";
 
-// Check existing tips
-$existing = $conn->query("SELECT COUNT(*) as cnt FROM electricity_tips")->fetch(PDO::FETCH_ASSOC);
-echo "Existing tips in database: {$existing['cnt']}\n\n";
+try {
+    $conn->beginTransaction();
 
-$inserted = 0;
-$skipped = 0;
+    // Wipe existing tips completely
+    $conn->exec("DELETE FROM electricity_tips");
+    echo "Deleted existing tips from the database.\n";
 
-$stmt = $conn->prepare("
-    INSERT INTO electricity_tips (title, message, category, icon, difficulty, savings_level, dorm_relevance, is_active) 
-    VALUES (?, ?, ?, ?, ?, ?, 'Student', 1)
-");
-
-// Check for duplicates by title before inserting
-$checkStmt = $conn->prepare("SELECT id FROM electricity_tips WHERE title = ?");
-
-foreach ($tips as $tip) {
-    $checkStmt->execute([$tip['title']]);
-    if ($checkStmt->fetch()) {
-        $skipped++;
-        echo "  SKIP: '{$tip['title']}' (already exists)\n";
-        continue;
+    // Prepare statement for insertion
+    $stmt = $conn->prepare("INSERT INTO electricity_tips (title, message, category, icon, difficulty, savings_level) VALUES (?, ?, ?, ?, ?, ?)");
+    
+    $insertedCount = 0;
+    foreach ($tips as $tip) {
+        $stmt->execute([
+            $tip['title'],
+            $tip['message'],
+            $tip['category'],
+            $tip['icon'] ?? 'bulb-outline',
+            $tip['difficulty'] ?? 'Easy',
+            $tip['savings_level'] ?? 'Moderate'
+        ]);
+        $insertedCount++;
     }
 
-    $stmt->execute([
-        $tip['title'],
-        $tip['message'],
-        $tip['category'],
-        $tip['icon'],
-        $tip['difficulty'],
-        $tip['savings_level']
-    ]);
-    $inserted++;
-    echo "  ADD:  '{$tip['title']}' [{$tip['category']}]\n";
+    $conn->commit();
+    echo "\nSuccessfully inserted {$insertedCount} generalized energy-saving tips across 12 categories!\n";
+    echo "Tip generation complete.\n";
+
+} catch (Exception $e) {
+    $conn->rollBack();
+    echo "Error seeding tips: " . $e->getMessage() . "\n";
 }
-
-echo "\n============================\n";
-echo "Inserted: {$inserted}\n";
-echo "Skipped (duplicates): {$skipped}\n";
-
-// Final count
-$final = $conn->query("SELECT COUNT(*) as cnt FROM electricity_tips")->fetch(PDO::FETCH_ASSOC);
-echo "Total tips now: {$final['cnt']}\n\n";
-
-// Category breakdown
-echo "Category breakdown:\n";
-$cats = $conn->query("SELECT category, COUNT(*) as cnt FROM electricity_tips GROUP BY category ORDER BY category")->fetchAll(PDO::FETCH_ASSOC);
-foreach ($cats as $cat) {
-    echo "  {$cat['category']}: {$cat['cnt']} tips\n";
-}
-echo "\nDone!\n";
