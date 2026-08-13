@@ -1,12 +1,15 @@
 <?php
-class RoomRepository {
+class RoomRepository
+{
     private $conn;
 
-    public function __construct($dbConnection) {
+    public function __construct($dbConnection)
+    {
         $this->conn = $dbConnection;
     }
 
-    private function autoExpireRooms() {
+    private function autoExpireRooms()
+    {
         $this->conn->exec("UPDATE invitations SET status = 'expired' WHERE status = 'pending' AND expires_at < NOW()");
         $this->conn->exec("
             UPDATE rooms r
@@ -16,32 +19,37 @@ class RoomRepository {
         ");
     }
 
-    public function getAllRooms() {
+    public function getAllRooms()
+    {
         $this->autoExpireRooms();
         $stmt = $this->conn->prepare("SELECT * FROM rooms ORDER BY room_id ASC");
         $stmt->execute();
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
-    public function findById($roomId) {
+    public function findById($roomId)
+    {
         $stmt = $this->conn->prepare("SELECT * FROM rooms WHERE room_id = ?");
         $stmt->execute([$roomId]);
         return $stmt->fetch(PDO::FETCH_ASSOC);
     }
 
-    public function findByTenantCodeHash($hash) {
+    public function findByTenantCodeHash($hash)
+    {
         $stmt = $this->conn->prepare("SELECT * FROM rooms WHERE tenant_code_hash = ?");
         $stmt->execute([$hash]);
         return $stmt->fetch(PDO::FETCH_ASSOC);
     }
 
-    public function findByUserIdOrTenantName($userId, $tenantName) {
+    public function findByUserIdOrTenantName($userId, $tenantName)
+    {
         $stmt = $this->conn->prepare("SELECT r.*, u.id as user_id FROM rooms r LEFT JOIN users u ON r.room_id = u.room_id WHERE u.id = ? OR r.tenant_name = ?");
         $stmt->execute([$userId, $tenantName]);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
-    public function getBuildingSummary() {
+    public function getBuildingSummary()
+    {
         $this->autoExpireRooms();
         $stmt = $this->conn->query("SELECT 
             COUNT(*) as totalRooms,
@@ -56,15 +64,17 @@ class RoomRepository {
         return $stmt->fetch(PDO::FETCH_ASSOC);
     }
 
-    public function getRoomsWithConsumption($currStart = null, $nextStart = null, $prevStart = null) {
+    public function getRoomsWithConsumption($currStart = null, $nextStart = null, $prevStart = null)
+    {
         $this->autoExpireRooms();
         $stmt = $this->conn->prepare("
             SELECT r.*, 
                    COALESCE(curr.totalEnergy, 0) as currEnergy,
+                   COALESCE(curr.totalCost, 0) as currCost,
                    COALESCE(prev.totalEnergy, 0) as prevEnergy
             FROM rooms r
             LEFT JOIN (
-                SELECT c.room_id, SUM(c.energy) as totalEnergy 
+                SELECT c.room_id, SUM(c.energy) as totalEnergy, SUM(c.cost) as totalCost 
                 FROM consumption_logs c
                 JOIN billing_cycles bc ON c.billing_cycle_id = bc.id AND bc.status = 'active'
                 GROUP BY c.room_id
@@ -83,38 +93,45 @@ class RoomRepository {
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
-    public function updateStatus($roomId, $status, $tenantName = null, $startDate = null) {
+    public function updateStatus($roomId, $status, $tenantName = null, $startDate = null)
+    {
         $stmt = $this->conn->prepare("UPDATE rooms SET status = ?, tenant_name = ?, tenant_start_date = ? WHERE room_id = ?");
         return $stmt->execute([$status, $tenantName, $startDate, $roomId]);
     }
 
-    public function getVacantRooms() {
+    public function getVacantRooms()
+    {
         $stmt = $this->conn->prepare("SELECT * FROM rooms WHERE status = 'vacant'");
         $stmt->execute();
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
-    public function updateTenantCodeSecure($roomId, $hash, $encrypted, $masked) {
+    public function updateTenantCodeSecure($roomId, $hash, $encrypted, $masked)
+    {
         $stmt = $this->conn->prepare("UPDATE rooms SET tenant_code_hash = ?, tenant_code_encrypted = ?, tenant_code_masked = ? WHERE room_id = ?");
         return $stmt->execute([$hash, $encrypted, $masked, $roomId]);
     }
 
-    public function markAsOccupied($roomId, $tenantName) {
+    public function markAsOccupied($roomId, $tenantName)
+    {
         $stmt = $this->conn->prepare("UPDATE rooms SET status = 'occupied', tenant_name = ?, tenant_start_date = CURDATE() WHERE room_id = ?");
         return $stmt->execute([$tenantName, $roomId]);
     }
 
-    public function markAsVacant($roomId) {
+    public function markAsVacant($roomId)
+    {
         $stmt = $this->conn->prepare("UPDATE rooms SET status = 'vacant', tenant_name = NULL, tenant_start_date = NULL, tenant_code_hash = NULL, tenant_code_encrypted = NULL, tenant_code_masked = NULL WHERE room_id = ?");
         return $stmt->execute([$roomId]);
     }
 
-    public function updateLastSeen($roomId) {
+    public function updateLastSeen($roomId)
+    {
         $stmt = $this->conn->prepare("UPDATE rooms SET last_seen = NOW() WHERE room_id = ?");
         return $stmt->execute([$roomId]);
     }
 
-    public function createRoom($data) {
+    public function createRoom($data)
+    {
         $stmt = $this->conn->prepare("
             INSERT INTO rooms (room_id, room_type, max_occupancy, status, tenant_code_hash, tenant_code_encrypted, tenant_code_masked)
             VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -130,7 +147,8 @@ class RoomRepository {
         ]);
     }
 
-    public function updateRoom($roomId, $data) {
+    public function updateRoom($roomId, $data)
+    {
         $stmt = $this->conn->prepare("
             UPDATE rooms 
             SET room_type = ?, max_occupancy = ?, status = ?
@@ -144,12 +162,14 @@ class RoomRepository {
         ]);
     }
 
-    public function archiveRoom($roomId, $userId) {
+    public function archiveRoom($roomId, $userId)
+    {
         $stmt = $this->conn->prepare("UPDATE rooms SET status = 'archived' WHERE room_id = ?");
         return $stmt->execute([$roomId]);
     }
 
-    public function restoreRoom($roomId) {
+    public function restoreRoom($roomId)
+    {
         $stmt = $this->conn->prepare("UPDATE rooms SET status = 'vacant' WHERE room_id = ?");
         return $stmt->execute([$roomId]);
     }

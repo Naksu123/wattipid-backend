@@ -12,8 +12,8 @@ class NotificationService {
         return ['success' => true, 'data' => $this->notifRepo->getNotifications($roomId, $userId, $limit)];
     }
 
-    public function markAsRead($id) {
-        $this->notifRepo->markAsRead($id);
+    public function markAsRead($id, $userId) {
+        $this->notifRepo->markAsRead($id, $userId);
         return ['success' => true];
     }
 
@@ -50,6 +50,12 @@ class NotificationService {
         require_once __DIR__ . '/../utils/notification_engine.php';
         $notifEngine = new NotificationEngine($this->notifRepo->getConn());
         $notifEngine->updateAlertSettings($userId, $roomId, $settings);
-        return ['success' => true, 'message' => 'Alert settings updated'];
+        return ['success' => true, 'message' => 'Notification deleted'];
+    }
+
+    public function deleteAllNotifications($userId) {
+        $stmt = $this->notifRepo->getConn()->prepare("DELETE FROM notifications WHERE user_id = ?");
+        $stmt->execute([$userId]);
+        return ['success' => true, 'message' => 'All notifications deleted'];
     }
 }

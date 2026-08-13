@@ -201,21 +201,36 @@ class PenaltyService {
         }
     }
 
+    public function waivePenalty($billingCycleId) {
+        try {
+            $stmt = $this->conn->prepare("UPDATE billing_cycles SET penalty_amount = 0 WHERE id = ? AND payment_status = 'overdue'");
+            $stmt->execute([$billingCycleId]);
+            if ($stmt->rowCount() > 0) {
+                return ["success" => true, "message" => "Penalty waived successfully."];
+            }
+            return ["success" => false, "message" => "Billing cycle not found or not overdue."];
+        } catch (PDOException $e) {
+            return ["success" => false, "message" => "Database error: " . $e->getMessage()];
+        }
+    }
+
     public function getOverdueAccounts() {
         $sql = "SELECT b.id, b.room_id, b.tenant_name, b.due_date, b.total_cost as original_balance, b.penalty_amount, 
                 (b.total_cost + COALESCE(b.penalty_amount, 0)) as total_amount_due,
                 DATEDIFF(NOW(), b.due_date) as days_overdue
                 FROM billing_cycles b 
-                WHERE b.payment_status = 'overdue' 
+                WHERE b.payment_status IN ('unpaid', 'partially_paid', 'overdue') 
+                AND b.due_date < CURDATE()
+                AND b.status = 'completed'
                 ORDER BY days_overdue DESC";
         $stmt = $this->conn->query($sql);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
     
     public function getPenaltyAnalytics() {
-        $sqlTotalOverdue = "SELECT COUNT(*) FROM billing_cycles WHERE payment_status = 'overdue'";
-        $sqlTotalPenalty = "SELECT COALESCE(SUM(penalty_amount), 0) FROM billing_cycles WHERE payment_status = 'overdue'";
-        $sqlTotalOutstanding = "SELECT COALESCE(SUM(total_cost + COALESCE(penalty_amount, 0)), 0) FROM billing_cycles WHERE payment_status IN ('overdue', 'unpaid') AND status = 'completed'";
+        $sqlTotalOverdue = "SELECT COUNT(*) FROM billing_cycles WHERE payment_status IN ('unpaid', 'partially_paid', 'overdue') AND due_date < CURDATE() AND status = 'completed'";
+        $sqlTotalPenalty = "SELECT COALESCE(SUM(penalty_amount), 0) FROM billing_cycles WHERE payment_status IN ('unpaid', 'partially_paid', 'overdue') AND due_date < CURDATE() AND status = 'completed'";
+        $sqlTotalOutstanding = "SELECT COALESCE(SUM(total_cost + COALESCE(penalty_amount, 0)), 0) FROM billing_cycles WHERE payment_status IN ('unpaid', 'partially_paid', 'overdue') AND due_date < CURDATE() AND status = 'completed'";
         $sqlDueToday = "SELECT COUNT(*) FROM billing_cycles WHERE payment_status = 'unpaid' AND DATE(due_date) = CURDATE() AND status = 'completed'";
         $sqlDueTomorrow = "SELECT COUNT(*) FROM billing_cycles WHERE payment_status = 'unpaid' AND DATE(due_date) = DATE_ADD(CURDATE(), INTERVAL 1 DAY) AND status = 'completed'";
         $sqlPenaltiesCollected = "SELECT COALESCE(SUM(penalty_amount), 0) FROM billing_cycles WHERE penalty_amount > 0";
@@ -228,6 +243,21 @@ class PenaltyService {
             'billsDueTomorrow' => $this->conn->query($sqlDueTomorrow)->fetchColumn(),
             'totalPenaltiesCollected' => $this->conn->query($sqlPenaltiesCollected)->fetchColumn(),
         ];
+    }
+
+    public function getRecentActivity($limit = 50) {
+        $sql = "SELECT MAX(ph.id) as id, ph.room_id, ph.tenant_name, MIN(ph.penalty_amount) as penalty_amount, 
+                       ph.penalty_type, MAX(ph.created_at) as created_at, ph.days_overdue
+                FROM penalty_history ph
+                JOIN billing_cycles bc ON bc.id = ph.billing_cycle_id
+                WHERE bc.payment_status IN ('unpaid', 'partially_paid', 'overdue')
+                GROUP BY DATE(ph.created_at), ph.billing_cycle_id, ph.room_id, ph.tenant_name, ph.penalty_type, ph.days_overdue
+                ORDER BY MAX(ph.created_at) DESC 
+                LIMIT ?";
+        $stmt = $this->conn->prepare($sql);
+        $stmt->bindValue(1, $limit, PDO::PARAM_INT);
+        $stmt->execute();
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
     // =========================================================

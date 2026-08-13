@@ -282,7 +282,7 @@ class Router {
                 $this->notificationController->createNotification($authenticatedUser, $data);
                 return true;
             case 'markNotificationRead':
-                $this->notificationController->markAsRead($data);
+                $this->notificationController->markAsRead($authenticatedUser, $data);
                 return true;
             case 'getUnreadNotificationCount':
                 $this->notificationController->getUnreadCount($authenticatedUser, $data);
@@ -292,6 +292,9 @@ class Router {
                 return true;
             case 'deleteNotification':
                 $this->notificationController->deleteNotification($authenticatedUser, $data);
+                return true;
+            case 'deleteAllNotifications':
+                $this->notificationController->deleteAllNotifications($authenticatedUser, $data);
                 return true;
             case 'getAlertSettings':
                 $this->notificationController->getAlertSettings($authenticatedUser, $data);
@@ -304,6 +307,9 @@ class Router {
                 return true;
             case 'getNotificationsByCategory':
                 $this->notificationController->getNotificationsByCategory($authenticatedUser, $data);
+                return true;
+            case 'send_manual_reminder':
+                $this->notificationController->sendManualReminder($authenticatedUser, $data);
                 return true;
 
             // SETTINGS & TIPS
@@ -405,9 +411,11 @@ class Router {
             case 'getOverdueAccounts':
                 $this->penaltyController->getOverdueCenter($authenticatedUser);
                 return true;
-
             case 'triggerPenaltyCalculation':
                 $this->penaltyController->triggerCalculation($authenticatedUser);
+                return true;
+            case 'waivePenalty':
+                $this->penaltyController->waivePenalty($authenticatedUser, $data);
                 return true;
 
             // SYNC

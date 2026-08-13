@@ -61,9 +61,9 @@ class NotificationRepository {
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
-    public function markAsRead($id) {
-        $stmt = $this->conn->prepare("UPDATE notifications SET is_read = 1 WHERE id = ?");
-        return $stmt->execute([$id]);
+    public function markAsRead($id, $userId) {
+        $stmt = $this->conn->prepare("UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?");
+        return $stmt->execute([$id, $userId]);
     }
 
     public function getUnreadCount($roomId) {

@@ -289,6 +289,55 @@ class BillingNotificationService {
     }
 
     // =========================================================
+    // API TRIGGER: Manual Reminders
+    // =========================================================
+    public function sendManualReminder($roomId, $userId, $totalDue, $daysOverdue, $isAuto = false) {
+        $settings = $this->getPreferences($userId, $roomId);
+        if (!$settings['notifications_enabled'] || !($settings['overdue_alerts'] ?? true)) return false;
+
+        $alert = [
+            'type' => 'manual_reminder',
+            'category' => 'billing',
+            'severity' => 'critical',
+            'title' => $isAuto ? '🚨 Overdue Bill Reminder' : '🔔 Payment Reminder',
+            'message' => "Your electricity bill of ₱" . number_format($totalDue, 2) . " is overdue by $daysOverdue day(s). Please settle it to avoid further penalties.",
+            'data' => [
+                'days_overdue' => $daysOverdue,
+                'total_due' => $totalDue,
+            ],
+            'cooldown_minutes' => 0, // No cooldown for manually triggered reminders
+        ];
+
+        try {
+            $ownsTransaction = false;
+            if (!$this->conn->inTransaction()) {
+                $this->conn->beginTransaction();
+                $ownsTransaction = true;
+            }
+
+            $notifId = $this->saveNotification($userId, $roomId, $alert);
+
+            if ($ownsTransaction) {
+                $this->conn->commit();
+            }
+
+            $alert['id'] = $notifId;
+
+            if ($settings['push_enabled']) {
+                $this->queuePush($userId, $alert);
+            }
+
+            return true;
+        } catch (Exception $e) {
+            if (isset($ownsTransaction) && $ownsTransaction && $this->conn->inTransaction()) {
+                $this->conn->rollBack();
+            }
+            error_log("[BillingNotifSvc] Error saving manual reminder: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    // =========================================================
     // CHECK 4: Payment Verification Alerts (Real-time trigger)
     // =========================================================
     public function sendPaymentVerificationAlert($roomId, $userId, $amountPaid, $status, $paymentMethod, $remainingBalance, $paymentData = []) {
@@ -548,17 +597,29 @@ class BillingNotificationService {
     }
 
     private function saveNotification($userId, $roomId, $alert) {
-        $stmt = $this->conn->prepare("
-            INSERT INTO notification_history (user_id, room_id, type, category, severity, title, message, data_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ");
-        $stmt->execute([
-            $userId, $roomId,
-            $alert['type'], $alert['category'], $alert['severity'],
-            $alert['title'], $alert['message'],
-            json_encode($alert['data'] ?? []),
-        ]);
-        return $this->conn->lastInsertId();
+        try {
+            $stmt = $this->conn->prepare("
+                INSERT INTO notification_history (user_id, room_id, type, category, severity, title, message, data_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ");
+            $stmt->execute([
+                $userId, $roomId,
+                $alert['type'], $alert['category'], $alert['severity'],
+                $alert['title'], $alert['message'],
+                json_encode($alert['data'] ?? []),
+            ]);
+            return $this->conn->lastInsertId();
+        } catch (Exception $e) {
+            // Fallback to legacy notifications table
+            $stmt = $this->conn->prepare("INSERT INTO notifications (room_id, user_id, type, title, message) VALUES (?, ?, ?, ?, ?)");
+            $stmt->execute([
+                $roomId, $userId,
+                $alert['type'],
+                $alert['title'],
+                $alert['message']
+            ]);
+            return $this->conn->lastInsertId();
+        }
     }
 
     private function queuePush($userId, $alert) {

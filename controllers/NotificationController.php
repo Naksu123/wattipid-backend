@@ -17,7 +17,7 @@ class NotificationController {
      * Also fixes the SQLSTATE[42000] error by using proper integer binding.
      */
     public function getNotifications($authenticatedUser, $data) {
-        $userId = $authenticatedUser['id'] ?? $data['userId'] ?? null;
+        $userId = $authenticatedUser['id']; // Strictly use JWT token identity
         $roomId = $data['roomId'] ?? null;
         $category = $data['category'] ?? null;
         $limit = (int) ($data['limit'] ?? 20);
@@ -83,7 +83,8 @@ class NotificationController {
         ResponseHelper::sendRaw(['success' => false, 'message' => 'Failed to create notification']);
     }
 
-    public function markAsRead($data) {
+    public function markAsRead($authenticatedUser, $data) {
+        $userId = $authenticatedUser['id'];
         $notifId = $data['notificationId'] ?? $data['id'] ?? null;
         if (!$notifId) {
             ResponseHelper::sendRaw(['success' => true]);
@@ -92,15 +93,15 @@ class NotificationController {
         
         // Try both tables
         try {
-            $this->conn->prepare("UPDATE notification_history SET is_read = 1 WHERE id = ?")->execute([$notifId]);
+            $this->conn->prepare("UPDATE notification_history SET is_read = 1 WHERE id = ? AND user_id = ?")->execute([$notifId, $userId]);
         } catch (Exception $e) {}
         
-        $result = $this->notifService->markAsRead($notifId);
+        $result = $this->notifService->markAsRead($notifId, $userId);
         ResponseHelper::sendRaw($result);
     }
 
     public function getUnreadCount($authenticatedUser, $data) {
-        $userId = $authenticatedUser['id'] ?? $data['userId'] ?? null;
+        $userId = $authenticatedUser['id']; // Strictly use JWT token identity
         $roomId = $data['roomId'] ?? null;
         
         $count = 0;
@@ -117,7 +118,7 @@ class NotificationController {
         // Also check legacy notifications table
         if ($roomId) {
             try {
-                $legacyResult = $this->notifService->getUnreadCount($roomId);
+                $legacyResult = $this->notifService->getUnreadCount($roomId, $userId);
                 $count += (int) ($legacyResult['data'] ?? 0);
             } catch (Exception $e) {}
         }
@@ -147,7 +148,19 @@ class NotificationController {
         } catch (Exception $e) {}
         
         $result = $this->notifService->deleteNotification($notifId, $userId);
-        ResponseHelper::sendRaw($result);
+
+        echo json_encode($result);
+    }
+
+    public function deleteAllNotifications($authenticatedUser, $data) {
+        $userId = $authenticatedUser['id'];
+        
+        try {
+            $this->conn->prepare("DELETE FROM notification_history WHERE user_id = ?")->execute([$userId]);
+        } catch (Exception $e) {}
+        
+        $result = $this->notifService->deleteAllNotifications($userId);
+        echo json_encode($result);
     }
 
     public function getAlertSettings($authenticatedUser, $data) {
@@ -207,6 +220,34 @@ class NotificationController {
         } catch (Exception $e) {
             error_log("getNotificationsByCategory error: " . $e->getMessage());
             ResponseHelper::sendRaw(['success' => true, 'data' => []]);
+        }
+    }
+
+    public function sendManualReminder($authenticatedUser, $data) {
+        if ($authenticatedUser['role'] !== 'landlord') {
+            ResponseHelper::error("Unauthorized access.", 403);
+            return;
+        }
+
+        $roomId = $data['room_id'] ?? null;
+        $tenantId = $data['tenant_id'] ?? null;
+        $totalDue = $data['total_due'] ?? 0;
+        $daysOverdue = $data['days_overdue'] ?? 0;
+
+        if (!$roomId || !$tenantId) {
+            ResponseHelper::error("Missing required parameters.");
+            return;
+        }
+
+        require_once __DIR__ . '/../services/BillingNotificationService.php';
+        $billingNotifSvc = new BillingNotificationService($this->conn);
+        
+        $success = $billingNotifSvc->sendManualReminder($roomId, $tenantId, $totalDue, $daysOverdue, false);
+
+        if ($success) {
+            ResponseHelper::sendRaw(['success' => true, 'message' => 'Reminder sent successfully']);
+        } else {
+            ResponseHelper::error("Failed to send reminder or tenant notifications are disabled.");
         }
     }
 

@@ -1,5 +1,7 @@
 <?php
 require_once __DIR__ . '/../helpers/ResponseHelper.php';
+require_once __DIR__ . '/../services/RoomService.php';
+require_once __DIR__ . '/../services/DashboardSyncService.php';
 
 class SyncController {
     private $db;
@@ -58,13 +60,29 @@ class SyncController {
                 $triggerFullRefresh = true; // Tell frontend to refetch dashboard static data
             }
 
-            ResponseHelper::success([
+            $responsePayload = [
                 'has_updates' => $hasUpdates,
                 'trigger_full_refresh' => $triggerFullRefresh,
                 'new_activities' => $activities,
                 'new_notifications_count' => $newNotifs,
                 'server_timestamp' => date('Y-m-d H:i:s')
-            ]);
+            ];
+
+            // 4. Attach Landlord Real-Time Sync Data (Throttled)
+            $requestLandlordData = isset($data['request_landlord_data']) && $data['request_landlord_data'];
+            
+            if (in_array($authenticatedUser['role'], ['landlord', 'admin']) && $requestLandlordData) {
+                $roomService = new RoomService($this->db);
+                $dashboardSyncService = new DashboardSyncService($this->db);
+                
+                $responsePayload['landlord_sync_data'] = [
+                    'liveOverview' => $dashboardSyncService->getLiveOverview($authenticatedUser['id'], $authenticatedUser['role'])['data'] ?? null,
+                    'roomsSummary' => $roomService->getBuildingSummary()['data'] ?? null
+                ];
+                $responsePayload['has_updates'] = true; // Always true for landlord real-time streaming
+            }
+
+            ResponseHelper::success($responsePayload);
 
         } catch (PDOException $e) {
             error_log("Sync Error: " . $e->getMessage());

@@ -228,5 +228,78 @@ class BillingCycleService {
         $res = $stmt->fetch(PDO::FETCH_ASSOC);
         return $res ? $res['id'] : null;
     }
+
+    /**
+     * Authoritative centralized calculation for a tenant's live bill mid-cycle.
+     */
+    public function getLiveBillBreakdown($roomId, $cycleId = null) {
+        $activeCycleId = $cycleId ?: $this->getActiveCycleId($roomId);
+
+        if (!$activeCycleId) {
+            return [
+                'consumptionKwh' => 0.00,
+                'ratePerKwh' => 12.50,
+                'electricityCharge' => 0.00,
+                'monthlyRent' => 0.00,
+                'previousBalance' => 0.00,
+                'additionalCharges' => 0.00,
+                'penalty' => 0.00,
+                'discounts' => 0.00,
+                'totalAmountDue' => 0.00,
+                'cycle_start' => null,
+                'cycle_end' => null
+            ];
+        }
+
+        // 1. Authoritative Energy Sum (Using billing_cycle_id foreign key)
+        $stmt = $this->db->prepare("SELECT SUM(energy) as totalEnergy, SUM(cost) as totalCost FROM consumption_logs WHERE billing_cycle_id = ?");
+        $stmt->execute([$activeCycleId]);
+        $usage = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        $kwh = (float)($usage['totalEnergy'] ?? 0);
+        $electricityCharge = (float)($usage['totalCost'] ?? 0);
+        
+        $rateQuery = $this->db->query("SELECT setting_value FROM settings WHERE setting_key = 'rate_per_kwh'");
+        $globalRate = $rateQuery->fetchColumn() ?: 12.50;
+
+        $roomQuery = $this->db->prepare("SELECT utility_rate, monthly_rent FROM rooms WHERE room_id = ?");
+        $roomQuery->execute([$roomId]);
+        $roomInfo = $roomQuery->fetch(PDO::FETCH_ASSOC);
+
+        $rate = (!empty($roomInfo['utility_rate']) && $roomInfo['utility_rate'] > 0) ? (float)$roomInfo['utility_rate'] : (float)$globalRate;
+
+        // If cost wasn't logged correctly in older data, recalculate it based on current rate
+        if ($electricityCharge == 0 && $kwh > 0) {
+            $electricityCharge = $kwh * $rate;
+        }
+
+        // 3. Fetch active cycle details for mid-month fees
+        $cycleQuery = $this->db->prepare("SELECT * FROM billing_cycles WHERE id = ?");
+        $cycleQuery->execute([$activeCycleId]);
+        $activeCycle = $cycleQuery->fetch(PDO::FETCH_ASSOC);
+
+        $additionalCharges = (float)($activeCycle['additional_charges'] ?? 0);
+        $penalty = (float)($activeCycle['penalty_amount'] ?? 0);
+        $discounts = (float)($activeCycle['discounts'] ?? 0);
+        $previousBalance = (float)($activeCycle['previous_balance'] ?? 0);
+        $rent = (float)($roomInfo['monthly_rent'] ?? 0);
+
+        // Compute total live bill
+        $total = $electricityCharge + $rent + $additionalCharges + $penalty + $previousBalance - $discounts;
+
+        return [
+            'consumptionKwh' => round($kwh, 4),
+            'ratePerKwh' => round($rate, 2),
+            'electricityCharge' => round($electricityCharge, 2),
+            'monthlyRent' => round($rent, 2),
+            'previousBalance' => round($previousBalance, 2),
+            'additionalCharges' => round($additionalCharges, 2),
+            'penalty' => round($penalty, 2),
+            'discounts' => round($discounts, 2),
+            'totalAmountDue' => round($total, 2),
+            'cycle_start' => $activeCycle['cycle_start'],
+            'cycle_end' => $activeCycle['cycle_end']
+        ];
+    }
 }
 
