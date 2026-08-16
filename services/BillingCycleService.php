@@ -257,7 +257,7 @@ class BillingCycleService {
         $usage = $stmt->fetch(PDO::FETCH_ASSOC);
 
         $kwh = (float)($usage['totalEnergy'] ?? 0);
-        $electricityCharge = (float)($usage['totalCost'] ?? 0);
+        $electricityCharge = round($kwh * $rate, 2);
         
         $rateQuery = $this->db->query("SELECT setting_value FROM settings WHERE setting_key = 'rate_per_kwh'");
         $globalRate = $rateQuery->fetchColumn() ?: 12.50;
@@ -302,4 +302,5 @@ class BillingCycleService {
         ];
     }
 }
+
 

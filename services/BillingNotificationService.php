@@ -20,7 +20,7 @@ class BillingNotificationService {
     // Due date reminders: once per reminder level
     const DUE_DATE_COOLDOWN = 1440; // 24 hours
     // Overdue: once per day
-    const OVERDUE_COOLDOWN = 1440;
+    const OVERDUE_COOLDOWN = 4320; // 3 days
 
     public function __construct(\PDO $dbConnection) {
         $this->conn = $dbConnection;

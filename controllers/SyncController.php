@@ -44,9 +44,10 @@ class SyncController {
             $activities = $stmtAct->fetchAll(PDO::FETCH_ASSOC);
 
             // 2. Check for new Notifications for this user
-            $stmtNotif = $this->db->prepare("SELECT COUNT(*) FROM notification_history WHERE user_id = ? AND created_at > ? AND is_read = 0");
+            $stmtNotif = $this->db->prepare("SELECT * FROM notification_history WHERE user_id = ? AND created_at > ? AND is_read = 0");
             $stmtNotif->execute([$userId, $lastSync]);
-            $newNotifs = $stmtNotif->fetchColumn();
+            $newNotifsList = $stmtNotif->fetchAll(PDO::FETCH_ASSOC);
+            $newNotifsCount = count($newNotifsList);
 
             // 3. Check Billing Cycle changes (e.g. payment_status changed)
             // For simplicity, we just check if any billing cycle for the room was updated since last_sync
@@ -55,7 +56,7 @@ class SyncController {
             // Since this is a lightweight sync, we just tell the frontend if they need to refresh `fetchStaticData`.
             
             $triggerFullRefresh = false;
-            if (count($activities) > 0 || $newNotifs > 0) {
+            if (count($activities) > 0 || $newNotifsCount > 0) {
                 $hasUpdates = true;
                 $triggerFullRefresh = true; // Tell frontend to refetch dashboard static data
             }
@@ -64,7 +65,8 @@ class SyncController {
                 'has_updates' => $hasUpdates,
                 'trigger_full_refresh' => $triggerFullRefresh,
                 'new_activities' => $activities,
-                'new_notifications_count' => $newNotifs,
+                'new_notifications_count' => $newNotifsCount,
+                'new_notifications' => $newNotifsList,
                 'server_timestamp' => date('Y-m-d H:i:s')
             ];
 
