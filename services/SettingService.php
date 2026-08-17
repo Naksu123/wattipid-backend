@@ -12,6 +12,11 @@ class SettingService {
         return ['success' => true, 'data' => $this->settingRepo->getSetting($key)];
     }
 
+    public function getMultipleSettings($keys) {
+        if (!is_array($keys)) return ['success' => false, 'message' => 'Keys must be an array'];
+        return ['success' => true, 'data' => $this->settingRepo->getMultipleSettings($keys)];
+    }
+
     public function updateSetting($key, $value) {
         $this->settingRepo->updateSetting($key, $value);
         return ['success' => true];

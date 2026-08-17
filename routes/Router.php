@@ -316,6 +316,9 @@ class Router {
             case 'getSetting':
                 $this->settingController->getSetting($data);
                 return true;
+            case 'getMultipleSettings':
+                $this->settingController->getMultipleSettings($data);
+                return true;
             case 'setSetting':
             case 'updateSetting':
                 $this->settingController->updateSetting($authenticatedUser, $data);

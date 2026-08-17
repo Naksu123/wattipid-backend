@@ -103,7 +103,7 @@ class IoTService {
             $cumulativeEnergy = $lastCumulative;
         }
 
-        $rate = $this->getRatePerKwh();
+        $rate = $this->getRatePerKwh($roomId);
         $cost = $energyDelta * $rate;
 
         $tenantName = $room['tenant_name'];
@@ -240,10 +240,18 @@ class IoTService {
         }
     }
 
-    private function getRatePerKwh() {
+    private function getRatePerKwh($roomId) {
+        $stmt = $this->conn->prepare("SELECT utility_rate FROM rooms WHERE room_id = ?");
+        $stmt->execute([$roomId]);
+        $roomInfo = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!empty($roomInfo['utility_rate']) && $roomInfo['utility_rate'] > 0) {
+            return (float)$roomInfo['utility_rate'];
+        }
+
         $stmt = $this->conn->prepare("SELECT setting_value FROM settings WHERE setting_key = 'rate_per_kwh' LIMIT 1");
         $stmt->execute();
         $row = $stmt->fetch();
-        return $row ? (float) $row['setting_value'] : 12.5;
+        return $row ? (float) $row['setting_value'] : 12.50;
     }
 }

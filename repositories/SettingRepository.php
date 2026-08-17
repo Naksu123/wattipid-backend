@@ -12,6 +12,20 @@ class SettingRepository {
         return $stmt->fetchColumn();
     }
 
+    public function getMultipleSettings($keys) {
+        if (empty($keys)) return [];
+        $placeholders = str_repeat('?,', count($keys) - 1) . '?';
+        $stmt = $this->conn->prepare("SELECT setting_key, setting_value FROM settings WHERE setting_key IN ($placeholders)");
+        $stmt->execute($keys);
+        $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        $settings = [];
+        foreach ($results as $row) {
+            $settings[$row['setting_key']] = $row['setting_value'];
+        }
+        return $settings;
+    }
+
     public function updateSetting($key, $value) {
         $stmt = $this->conn->prepare("INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?");
         return $stmt->execute([$key, $value, $value]);

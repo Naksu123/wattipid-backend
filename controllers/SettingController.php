@@ -14,6 +14,12 @@ class SettingController {
         ResponseHelper::sendRaw($result);
     }
 
+    public function getMultipleSettings($data) {
+        $keys = $data['keys'] ?? [];
+        $result = $this->settingService->getMultipleSettings($keys);
+        ResponseHelper::sendRaw($result);
+    }
+
     public function updateSetting($authenticatedUser, $data) {
         if ($authenticatedUser['role'] !== 'landlord') {
             ResponseHelper::error("Forbidden", 403);

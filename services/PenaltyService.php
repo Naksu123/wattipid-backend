@@ -109,7 +109,7 @@ class PenaltyService {
                 $daysOverdueStmt->execute([$cycle['due_date']]);
                 $daysOverdue = max(1, (int)$daysOverdueStmt->fetchColumn());
 
-                $originalBalance = (float)$cycle['total_cost'];
+                $originalBalance = (float)$cycle['grand_total'] - (float)$cycle['amount_paid'] - (float)$cycle['penalty_amount'];
                 
                 // Deterministic formula: (Original * Rate) rounded, THEN multiplied by Days
                 // This guarantees UI consistency: Daily Penalty * Days Overdue = Total Penalty

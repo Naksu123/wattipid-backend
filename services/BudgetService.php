@@ -18,6 +18,24 @@ class BudgetService {
         $stmt->execute([$roomId, $month, $year]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
+        // Budget Rollover Logic
+        if (!$row) {
+            // Find the most recent budget set for this room
+            $pastStmt = $this->conn->prepare("SELECT * FROM budget_settings WHERE room_id = ? ORDER BY year DESC, month DESC LIMIT 1");
+            $pastStmt->execute([$roomId]);
+            $pastRow = $pastStmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($pastRow) {
+                // Auto-rollover this budget for the current month
+                $insertStmt = $this->conn->prepare("INSERT INTO budget_settings (room_id, monthly_budget, daily_allowance, weekly_allowance, month, year) VALUES (?, ?, ?, ?, ?, ?)");
+                $insertStmt->execute([$roomId, $pastRow['monthly_budget'], $pastRow['daily_allowance'], $pastRow['weekly_allowance'], $month, $year]);
+                
+                // Fetch the newly inserted row
+                $stmt->execute([$roomId, $month, $year]);
+                $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            }
+        }
+
         if ($row) {
             $daysInMonth = (int) date('t', strtotime("$year-$month-01"));
             if (!isset($row['weekly_allowance']) || $row['weekly_allowance'] == 0) {
@@ -59,9 +77,10 @@ class BudgetService {
         $month = $month ?? (int) date('m');
         $year = $year ?? (int) date('Y');
         
-        $stmt = $this->conn->prepare("DELETE FROM budget_settings WHERE room_id = ? AND month = ? AND year = ?");
+        $stmt = $this->conn->prepare("INSERT INTO budget_settings (room_id, monthly_budget, daily_allowance, weekly_allowance, month, year) VALUES (?, 0, 0, 0, ?, ?) ON DUPLICATE KEY UPDATE monthly_budget = 0, daily_allowance = 0, weekly_allowance = 0");
         $stmt->execute([$roomId, $month, $year]);
         
         return ['success' => true, 'message' => 'Budget reset successfully'];
     }
 }
+

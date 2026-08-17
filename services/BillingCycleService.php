@@ -110,7 +110,7 @@ class BillingCycleService {
                 status = 'completed', 
                 total_kwh = ?, 
                 total_cost = ?, 
-                due_date = DATE_ADD(NOW(), INTERVAL 3 DAY),
+                due_date = DATE_ADD(cycle_end, INTERVAL 3 DAY),
                 previous_reading = ?,
                 current_reading = ?,
                 rate_per_kwh = ?,
@@ -257,7 +257,6 @@ class BillingCycleService {
         $usage = $stmt->fetch(PDO::FETCH_ASSOC);
 
         $kwh = (float)($usage['totalEnergy'] ?? 0);
-        $electricityCharge = round($kwh * $rate, 2);
         
         $rateQuery = $this->db->query("SELECT setting_value FROM settings WHERE setting_key = 'rate_per_kwh'");
         $globalRate = $rateQuery->fetchColumn() ?: 12.50;
@@ -268,10 +267,7 @@ class BillingCycleService {
 
         $rate = (!empty($roomInfo['utility_rate']) && $roomInfo['utility_rate'] > 0) ? (float)$roomInfo['utility_rate'] : (float)$globalRate;
 
-        // If cost wasn't logged correctly in older data, recalculate it based on current rate
-        if ($electricityCharge == 0 && $kwh > 0) {
-            $electricityCharge = $kwh * $rate;
-        }
+        $electricityCharge = round($kwh * $rate, 2);
 
         // 3. Fetch active cycle details for mid-month fees
         $cycleQuery = $this->db->prepare("SELECT * FROM billing_cycles WHERE id = ?");
@@ -284,13 +280,17 @@ class BillingCycleService {
         $previousBalance = (float)($activeCycle['previous_balance'] ?? 0);
         $rent = (float)($roomInfo['monthly_rent'] ?? 0);
 
+        // Add 2% miscellaneous fee for live bill consistency
+        $miscellaneousFee = round($electricityCharge * 0.02, 2);
+
         // Compute total live bill
-        $total = $electricityCharge + $rent + $additionalCharges + $penalty + $previousBalance - $discounts;
+        $total = $electricityCharge + $miscellaneousFee + $rent + $additionalCharges + $penalty + $previousBalance - $discounts;
 
         return [
             'consumptionKwh' => round($kwh, 4),
             'ratePerKwh' => round($rate, 2),
             'electricityCharge' => round($electricityCharge, 2),
+            'miscellaneousFee' => round($miscellaneousFee, 2),
             'monthlyRent' => round($rent, 2),
             'previousBalance' => round($previousBalance, 2),
             'additionalCharges' => round($additionalCharges, 2),
