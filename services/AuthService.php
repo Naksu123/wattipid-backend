@@ -42,6 +42,23 @@ class AuthService {
         }
 
         // Success!
+        $onboardingCompleted = (int)($user['onboarding_completed'] ?? 1);
+        
+        // Handle legacy accounts: If onboarding_completed is 0 but account had previous logins or was created before, mark as completed
+        if ($onboardingCompleted === 0) {
+            if (!empty($user['last_login_at'])) {
+                // User has logged in before, so they are a legacy user
+                $this->userRepo->completeOnboarding($user['id']);
+                $onboardingCompleted = 1;
+                $isNewUser = false;
+            } else {
+                // Genuinely first time login on a new account
+                $isNewUser = true;
+            }
+        } else {
+            $isNewUser = false;
+        }
+
         $this->logLoginAttempt($email, true, $ip);
         $this->userRepo->updateLastLogin($user['id']);
 
@@ -71,6 +88,8 @@ class AuthService {
             }
         }
 
+        $user['onboarding_completed'] = (bool)$onboardingCompleted;
+        $user['is_new_user'] = (bool)$isNewUser;
         unset($user['password_hash']);
         return [
             'success' => true,
@@ -390,6 +409,8 @@ class AuthService {
                 $token = $this->generateAccessToken($user);
                 $refreshToken = $this->generateAndStoreRefreshToken($user['id']);
                 
+                $user['onboarding_completed'] = (bool)($user['onboarding_completed'] ?? 0);
+                $user['is_new_user'] = empty($user['onboarding_completed']);
                 unset($user['password_hash']);
                 $result['data'] = [
                     'user' => $user,

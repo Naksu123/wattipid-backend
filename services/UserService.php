@@ -22,6 +22,11 @@ class UserService {
         return ['success' => true, 'message' => 'Profile updated successfully'];
     }
 
+    public function completeOnboarding($userId) {
+        $this->userRepo->completeOnboarding($userId);
+        return ['success' => true, 'message' => 'Onboarding marked as completed'];
+    }
+
     public function updatePushToken($userId, $token) {
         // Update device_tokens table (supports multiple devices)
         $stmt = $this->userRepo->conn->prepare("

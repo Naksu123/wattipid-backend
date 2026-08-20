@@ -10,7 +10,7 @@ class BudgetService {
         $this->budgetRepo = new BudgetRepository($dbConnection);
     }
 
-    public function getBudget($roomId, $month, $year) {
+    public function getBudget($roomId, $month = null, $year = null) {
         $month = $month ?? (int) date('m');
         $year = $year ?? (int) date('Y');
         

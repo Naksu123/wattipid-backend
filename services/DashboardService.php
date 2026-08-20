@@ -142,7 +142,8 @@ class DashboardService
         // while also exposing the full breakdown
         $data = [
             'totalEnergy' => $liveBill['consumptionKwh'],
-            'totalCost' => $liveBill['totalAmountDue'], // "Live Bill" is the total amount due
+            'totalCost' => $liveBill['electricityCharge'], // Electricity charge for current active cycle
+            'liveBillTotal' => $liveBill['totalAmountDue'],
             'electricityCharge' => $liveBill['electricityCharge'],
             'additionalCharges' => $liveBill['additionalCharges'],
             'monthlyRent' => $liveBill['monthlyRent'],
@@ -313,6 +314,9 @@ class DashboardService
             $currEnd = date('Y-m-d H:i:s');
             $prevStart = date('Y-m-d 00:00:00', strtotime('-1 day'));
             $prevEnd = date('Y-m-d 23:59:59', strtotime('-1 day'));
+
+            $currData = $this->dashboardRepo->getTotalConsumption($col, $val, $currStart, $currEnd);
+            $prevData = $this->dashboardRepo->getTotalConsumption($col, $val, $prevStart, $prevEnd);
         } elseif ($period === 'weekly') {
             $stmt = $this->conn->prepare("SELECT cycle_start FROM billing_cycles WHERE room_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1");
             $stmt->execute([$id['value']]);

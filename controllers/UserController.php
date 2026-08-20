@@ -22,6 +22,14 @@ class UserController {
         ResponseHelper::sendRaw($result);
     }
 
+    public function completeOnboarding($authenticatedUser) {
+        if (!$authenticatedUser) {
+            ResponseHelper::error("Unauthorized", 401);
+        }
+        $result = $this->userService->completeOnboarding($authenticatedUser['id']);
+        ResponseHelper::sendRaw($result);
+    }
+
     public function updatePushToken($authenticatedUser, $data) {
         if (!$authenticatedUser) {
             ResponseHelper::error("Unauthorized", 401);

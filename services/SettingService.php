@@ -9,50 +9,53 @@ class SettingService {
     }
 
     public function getSetting($key) {
-        return ['success' => true, 'data' => $this->settingRepo->getSetting($key)];
+        $val = $this->settingRepo->getSetting($key);
+        return ['success' => true, 'data' => $val];
     }
 
     public function getMultipleSettings($keys) {
-        if (!is_array($keys)) return ['success' => false, 'message' => 'Keys must be an array'];
-        return ['success' => true, 'data' => $this->settingRepo->getMultipleSettings($keys)];
+        $res = $this->settingRepo->getMultipleSettings($keys);
+        return ['success' => true, 'data' => $res];
     }
 
     public function updateSetting($key, $value) {
-        $this->settingRepo->updateSetting($key, $value);
-        return ['success' => true];
+        if ($this->settingRepo->updateSetting($key, $value)) {
+            return ['success' => true, 'message' => 'Setting updated successfully'];
+        }
+        return ['success' => false, 'message' => 'Failed to update setting'];
     }
 
     public function addTip($category, $title, $message, $icon = 'bulb-outline') {
-        $this->settingRepo->addTip($category, $title, $message, $icon);
-        return ['success' => true];
+        if ($this->settingRepo->addTip($category, $title, $message, $icon)) {
+            return ['success' => true, 'message' => 'Tip added successfully'];
+        }
+        return ['success' => false, 'message' => 'Failed to add tip'];
     }
 
-    public function updateTip($id, $category, $title, $message, $icon, $is_active) {
-        $this->settingRepo->updateTip($id, $category, $title, $message, $icon, $is_active);
-        return ['success' => true];
+    public function updateTip($id, $category, $title, $message, $icon, $isActive) {
+        if ($this->settingRepo->updateTip($id, $category, $title, $message, $icon, $isActive)) {
+            return ['success' => true, 'message' => 'Tip updated successfully'];
+        }
+        return ['success' => false, 'message' => 'Failed to update tip'];
     }
 
     public function deleteTip($id) {
-        $this->settingRepo->deleteTip($id);
-        return ['success' => true];
+        if ($this->settingRepo->deleteTip($id)) {
+            return ['success' => true, 'message' => 'Tip deleted successfully'];
+        }
+        return ['success' => false, 'message' => 'Failed to delete tip'];
     }
 
     public function likeTip($id) {
-        $newCount = $this->settingRepo->likeTip($id);
-        if ($newCount !== false) {
-            return [
-                'success' => true, 
-                'message' => 'Tip liked successfully', 
-                'data' => ['likes_count' => (int)$newCount, 'tip_id' => (int)$id, 'liked' => true]
-            ];
+        $likes = $this->settingRepo->likeTip($id);
+        if ($likes !== false) {
+            return ['success' => true, 'message' => 'Tip liked', 'likes' => (int)$likes];
         }
         return ['success' => false, 'message' => 'Failed to like tip'];
     }
 
     public function viewTip($id, $userId = null) {
-        if (!$id) return ['success' => false, 'message' => 'ID required'];
         $this->settingRepo->viewTip($id);
-        // Also log per-user view for smart recommendations
         if ($userId) {
             $this->settingRepo->logTipView($userId, $id);
         }
@@ -60,19 +63,13 @@ class SettingService {
     }
 
     /**
-     * Smart Recommendation: Returns a fresh, non-repeating tip for the user
+     * Smart Recommendation: Returns a fresh, non-repeating, diverse tip
      */
-    public function getSmartRecommendation($userId, $excludeIds = [], $lastCategory = null) {
-        $tip = $this->settingRepo->getSmartRecommendation($userId, $excludeIds, $lastCategory);
+    public function getSmartRecommendation($userId, $excludeIds = [], $lastCategory = null, $recentCategories = [], $relevantCategories = []) {
+        $tip = $this->settingRepo->getSmartRecommendation($userId, $excludeIds, $lastCategory, $recentCategories, $relevantCategories);
         if ($tip) {
-            // Log this view automatically
-            $this->settingRepo->viewTip($tip['id']);
-            if ($userId > 0) {
-                $this->settingRepo->logTipView($userId, $tip['id']);
-            }
             return ['success' => true, 'data' => $tip];
         }
-        // Fallback: if all tips have been seen, return any random active tip
         $allTips = $this->settingRepo->getTips();
         $activeTips = array_filter($allTips, fn($t) => $t['isActive'] == 1);
         if (!empty($activeTips)) {
@@ -83,10 +80,18 @@ class SettingService {
     }
 
     /**
-     * Tip of the Day: Same tip for all users on a given calendar day
+     * Batch Smart Recommendations: Returns multiple diverse, non-repeating tips in one call
      */
-    public function getTipOfTheDay() {
-        $tip = $this->settingRepo->getTipOfTheDay();
+    public function getSmartRecommendationsBatch($userId, $count = 3, $excludeIds = [], $lastCategory = null, $recentCategories = [], $relevantCategories = []) {
+        $tips = $this->settingRepo->getSmartRecommendationsBatch($userId, $count, $excludeIds, $lastCategory, $recentCategories, $relevantCategories);
+        return ['success' => true, 'data' => $tips];
+    }
+
+    /**
+     * Tip of the Day: Deterministic per calendar day with cross-section exclusion
+     */
+    public function getTipOfTheDay($excludeIds = []) {
+        $tip = $this->settingRepo->getTipOfTheDay($excludeIds);
         if ($tip) {
             return ['success' => true, 'data' => $tip];
         }
@@ -94,10 +99,10 @@ class SettingService {
     }
 
     /**
-     * Trending Tips: Most engaged tips
+     * Trending Tips: Most engaged tips with cross-section exclusion
      */
-    public function getTrendingTips($limit = 5) {
-        $tips = $this->settingRepo->getTrendingTips($limit);
+    public function getTrendingTips($limit = 5, $excludeIds = []) {
+        $tips = $this->settingRepo->getTrendingTips($limit, $excludeIds);
         return ['success' => true, 'data' => $tips];
     }
 

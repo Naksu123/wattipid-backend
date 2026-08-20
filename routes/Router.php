@@ -341,6 +341,9 @@ class Router {
             case 'getSmartRecommendation':
                 $this->settingController->getSmartRecommendation($authenticatedUser, $data);
                 return true;
+            case 'getSmartRecommendationsBatch':
+                $this->settingController->getSmartRecommendationsBatch($authenticatedUser, $data);
+                return true;
             case 'getTipOfTheDay':
                 $this->settingController->getTipOfTheDay();
                 return true;
@@ -357,6 +360,9 @@ class Router {
                 return true;
             case 'updateUserProfile':
                 $this->userController->updateProfile($authenticatedUser, $data);
+                return true;
+            case 'completeOnboarding':
+                $this->userController->completeOnboarding($authenticatedUser);
                 return true;
             case 'updatePushToken':
             case 'registerPushToken':

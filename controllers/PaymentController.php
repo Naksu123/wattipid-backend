@@ -56,6 +56,24 @@ class PaymentController {
             $this->logAudit($authenticatedUser['id'], 'tenant', 'submit_payment', 'payments', $paymentId, null, "Amount: $amount");
 
             $this->db->commit();
+
+            // Notify Landlord safely without failing payment
+            try {
+                require_once __DIR__ . '/../services/BillingNotificationService.php';
+                $notifSvc = new BillingNotificationService($this->db);
+                $notifSvc->sendPaymentSubmittedAlert(
+                    $roomId, 
+                    $authenticatedUser['id'], 
+                    $authenticatedUser['name'], 
+                    $amount, 
+                    $paymentMethod, 
+                    $referenceNumber, 
+                    $paymentId
+                );
+            } catch (Exception $notifErr) {
+                error_log("Failed to send landlord payment notification: " . $notifErr->getMessage());
+            }
+
             echo json_encode(["success" => true, "message" => "Payment submitted and pending verification"]);
         } catch (Exception $e) {
             $this->db->rollBack();
@@ -157,6 +175,9 @@ class PaymentController {
                 $notifSvc = new BillingNotificationService($this->db);
                 $notifSvc->sendPaymentRejectionAlert($payment['room_id'], $payment['tenant_id'], $payment['amount'], $reason);
             }
+
+            // Always synchronize subsequent cycles' previous_balance for this room
+            $this->recalculateRoomPreviousBalances($payment['room_id']);
 
             $this->db->commit();
             echo json_encode(["success" => true, "message" => "Payment successfully $actionType" . "d"]);
@@ -453,6 +474,40 @@ class PaymentController {
             ]);
         } catch (Exception $e) {
             echo json_encode(["success" => false, "message" => "Error generating insights"]);
+        }
+    }
+
+    public function recalculateRoomPreviousBalances($roomId) {
+        try {
+            $stmt = $this->db->prepare("SELECT * FROM billing_cycles WHERE room_id = ? ORDER BY id ASC");
+            $stmt->execute([$roomId]);
+            $cycles = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $cumulativeUnpaid = 0.00;
+            foreach ($cycles as $c) {
+                $cycleId = $c['id'];
+                $newPrevBal = round($cumulativeUnpaid, 2);
+                
+                $elec = (float)$c['electricity_charge'];
+                $misc = (float)($c['miscellaneous_fee'] ?? 0);
+                $rent = (float)$c['monthly_rent'];
+                $add = (float)$c['additional_charges'];
+                $pen = (float)$c['penalty_amount'];
+                $disc = (float)$c['discounts'];
+                
+                $newGrandTotal = round($elec + $misc + $rent + $newPrevBal + $add + $pen - $disc, 2);
+                
+                if ($c['payment_status'] !== 'paid') {
+                    $up = $this->db->prepare("UPDATE billing_cycles SET previous_balance = ?, grand_total = ? WHERE id = ?");
+                    $up->execute([$newPrevBal, $newGrandTotal, $cycleId]);
+                }
+
+                $paid = (float)$c['amount_paid'];
+                $unpaidThisCycle = ($c['payment_status'] === 'paid') ? 0.00 : max(0.00, $newGrandTotal - $paid);
+                $cumulativeUnpaid = $unpaidThisCycle;
+            }
+        } catch (Exception $e) {
+            error_log("Failed to recalculate room previous balances: " . $e->getMessage());
         }
     }
 }

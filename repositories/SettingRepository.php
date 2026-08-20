@@ -65,6 +65,7 @@ class SettingRepository {
      * Log that a specific user viewed a specific tip (for smart recommendation exclusion)
      */
     public function logTipView($userId, $tipId) {
+        if (!$userId || !$tipId) return false;
         $stmt = $this->conn->prepare(
             "INSERT INTO tip_view_log (user_id, tip_id) VALUES (?, ?)"
         );
@@ -74,97 +75,197 @@ class SettingRepository {
     /**
      * Smart Recommendation Engine
      * 
-     * Returns 1 tip the user has NOT recently seen, weighted by:
-     * - Freshness (unseen tips scored highest)
-     * - Engagement (popular tips get a slight boost)
-     * - Category rotation (avoids showing same category twice in a row)
-     * - Randomized tiebreaker (prevents predictable ordering)
+     * Returns 1 tip using the multi-factor scoring formula:
+     * Final Score = Relevance + Unseen Bonus + Category Diversity + LRU Bonus + Rotation Tiebreaker - Recent Penalty
      */
-    public function getSmartRecommendation($userId, $excludeIds = [], $lastCategory = null) {
-        // Build exclude clause
-        $excludePlaceholders = '';
-        $params = [$userId];
-        
-        if (!empty($excludeIds)) {
-            $excludePlaceholders = ' AND t.id NOT IN (' . implode(',', array_fill(0, count($excludeIds), '?')) . ')';
-            $params = array_merge($params, $excludeIds);
-        }
-
-        // Deprioritize the last shown category to force rotation
-        $categoryPenalty = '';
-        if ($lastCategory) {
-            $categoryPenalty = ", CASE WHEN t.category = ? THEN 0 ELSE 10 END AS cat_bonus";
-            $params[] = $lastCategory;
-        }
-
-        $sql = "
-            SELECT 
-                t.id, t.title, t.message, t.category, t.icon,
-                t.is_active AS isActive,
-                t.views_count AS viewsCount,
-                t.likes_count AS likesCount,
-                t.created_at,
-                COALESCE(recent.view_count, 0) AS user_views
-                {$categoryPenalty}
-            FROM electricity_tips t
-            LEFT JOIN (
-                SELECT tip_id, COUNT(*) AS view_count
-                FROM tip_view_log
-                WHERE user_id = ?
-                  AND viewed_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
-                GROUP BY tip_id
-            ) recent ON recent.tip_id = t.id
-            WHERE t.is_active = 1
-              {$excludePlaceholders}
-            ORDER BY 
-                user_views ASC,
-                " . ($lastCategory ? "cat_bonus DESC," : "") . "
-                (t.likes_count * 0.3 + RAND() * 10) DESC
-            LIMIT 1
-        ";
-
-        $stmt = $this->conn->prepare($sql);
-        $stmt->execute($params);
-        return $stmt->fetch(PDO::FETCH_ASSOC);
+    public function getSmartRecommendation($userId, $excludeIds = [], $lastCategory = null, $recentCategories = [], $relevantCategories = []) {
+        $tips = $this->getSmartRecommendationsBatch($userId, 1, $excludeIds, $lastCategory, $recentCategories, $relevantCategories);
+        return !empty($tips) ? $tips[0] : null;
     }
 
     /**
-     * Get trending tips (most liked in last 7 days)
+     * Batch Smart Recommendations Engine
+     * 
+     * Returns $count non-repeating, diverse, relevant tips in one call.
      */
-    public function getTrendingTips($limit = 5) {
-        $limit = (int)$limit;
-        $stmt = $this->conn->query(
-            "SELECT id, title, message, category, icon, 
-                    is_active AS isActive, views_count AS viewsCount, likes_count AS likesCount, created_at
-             FROM electricity_tips 
-             WHERE is_active = 1 
-             ORDER BY (likes_count * 2 + views_count) DESC 
-             LIMIT {$limit}"
-        );
+    public function getSmartRecommendationsBatch($userId, $count = 1, $excludeIds = [], $lastCategory = null, $recentCategories = [], $relevantCategories = []) {
+        $count = max(1, (int)$count);
+        $userId = (int)$userId;
+
+        // Fetch all active tips
+        $stmt = $this->conn->query("SELECT id, title, message, category, icon, is_active AS isActive, views_count AS viewsCount, likes_count AS likesCount, created_at FROM electricity_tips WHERE is_active = 1");
+        $allTips = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        if (empty($allTips)) return [];
+
+        // Fetch total view history and last view timestamp for this user per tip
+        $userHistory = [];
+        if ($userId > 0) {
+            $stmtHist = $this->conn->prepare("SELECT tip_id, COUNT(*) as view_count, MAX(viewed_at) as last_viewed FROM tip_view_log WHERE user_id = ? GROUP BY tip_id");
+            $stmtHist->execute([$userId]);
+            while ($row = $stmtHist->fetch(PDO::FETCH_ASSOC)) {
+                $userHistory[(int)$row['tip_id']] = [
+                    'views' => (int)$row['view_count'],
+                    'last_viewed' => strtotime($row['last_viewed'])
+                ];
+            }
+        }
+
+        // Recent exclusion set
+        $excludeSet = array_flip(array_map('intval', (array)$excludeIds));
+        $recentCategories = array_values(array_filter((array)$recentCategories));
+        $relevantCategories = array_values(array_filter((array)$relevantCategories));
+        $relevantSet = array_flip($relevantCategories);
+
+        $now = time();
+        $scoredTips = [];
+
+        foreach ($allTips as $tip) {
+            $tipId = (int)$tip['id'];
+            $cat = $tip['category'];
+            $views = $userHistory[$tipId]['views'] ?? 0;
+            $lastViewed = $userHistory[$tipId]['last_viewed'] ?? 0;
+
+            // 1. Base Score
+            $score = 100.0;
+
+            // 2. Behavior Relevance (+30 to +40 points)
+            if (!empty($relevantSet)) {
+                if (isset($relevantSet[$cat])) {
+                    $score += 35.0;
+                }
+            }
+
+            // 3. Unseen / Lifetime View Bonus (+50 for 0 views, decaying)
+            if ($views === 0) {
+                $score += 50.0;
+            } else {
+                $score += max(0, 30.0 - ($views * 6.0));
+            }
+
+            // 4. Category Diversity Bonus / Penalty
+            if ($lastCategory && $cat === $lastCategory) {
+                $score -= 25.0; // Avoid immediate category repeat
+            }
+            if (!empty($recentCategories)) {
+                $catOccurrences = 0;
+                foreach ($recentCategories as $rCat) {
+                    if ($rCat === $cat) $catOccurrences++;
+                }
+                $score -= ($catOccurrences * 12.0);
+            }
+
+            // 5. Least-Recently-Used (LRU) bonus
+            if ($lastViewed > 0) {
+                $hoursSinceView = ($now - $lastViewed) / 3600.0;
+                $score += min(20.0, $hoursSinceView * 0.5);
+            } else {
+                $score += 20.0; // Never viewed gets full LRU bonus
+            }
+
+            // 6. Hard Exclusion Penalty for recently displayed IDs
+            if (isset($excludeSet[$tipId])) {
+                $score -= 1000.0;
+            }
+
+            // 7. Controlled rotation tiebreaker (deterministic hash based on time epoch and tip ID)
+            $rotationHash = (int)(($now / 60) + ($tipId * 17)) % 11;
+            $score += ($rotationHash * 0.8) + (min(10, (int)$tip['likesCount']) * 0.3);
+
+            $tip['score'] = $score;
+            $scoredTips[] = $tip;
+        }
+
+        // Sort by final score descending
+        usort($scoredTips, function($a, $b) {
+            return $b['score'] <=> $a['score'];
+        });
+
+        // Select $count tips, enforcing distinct categories among the batch
+        $selected = [];
+        $selectedCategories = [];
+
+        foreach ($scoredTips as $candidate) {
+            if (count($selected) >= $count) break;
+
+            // Enforce internal batch category diversity if count > 1 and alternatives exist
+            if ($count > 1 && in_array($candidate['category'], $selectedCategories) && count($scoredTips) > count($selected)) {
+                $hasAlternative = false;
+                foreach ($scoredTips as $alt) {
+                    if (!in_array($alt['category'], $selectedCategories) && !in_array($alt['id'], array_column($selected, 'id')) && $alt['score'] > -500) {
+                        $hasAlternative = true;
+                        break;
+                    }
+                }
+                if ($hasAlternative) continue;
+            }
+
+            $selected[] = $candidate;
+            $selectedCategories[] = $candidate['category'];
+
+            // Log view in database
+            if ($userId > 0) {
+                $this->logTipView($userId, $candidate['id']);
+                $this->viewTip($candidate['id']);
+            }
+        }
+
+        return $selected;
+    }
+
+    /**
+     * Get trending tips (most liked/viewed), with cross-section exclusion
+     */
+    public function getTrendingTips($limit = 5, $excludeIds = []) {
+        $limit = max(1, (int)$limit);
+        $excludePlaceholders = '';
+        $params = [];
+        
+        if (!empty($excludeIds)) {
+            $excludePlaceholders = ' AND id NOT IN (' . implode(',', array_fill(0, count($excludeIds), '?')) . ')';
+            $params = array_values(array_map('intval', (array)$excludeIds));
+        }
+
+        $sql = "SELECT id, title, message, category, icon, 
+                       is_active AS isActive, views_count AS viewsCount, likes_count AS likesCount, created_at
+                FROM electricity_tips 
+                WHERE is_active = 1 {$excludePlaceholders}
+                ORDER BY (likes_count * 2 + views_count) DESC, id ASC 
+                LIMIT {$limit}";
+
+        $stmt = $this->conn->prepare($sql);
+        $stmt->execute($params);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
     /**
-     * Get Tip of the Day (deterministic per calendar day)
+     * Get Tip of the Day (deterministic per calendar day), with cross-section exclusion
      */
-    public function getTipOfTheDay() {
-        // Use day-of-year as a stable seed to pick the same tip for all users on the same day
+    public function getTipOfTheDay($excludeIds = []) {
         $dayIndex = (int)date('z'); // 0-365
-        $stmt = $this->conn->query("SELECT COUNT(*) FROM electricity_tips WHERE is_active = 1");
+        
+        $excludePlaceholders = '';
+        $params = [];
+        if (!empty($excludeIds)) {
+            $excludePlaceholders = ' AND id NOT IN (' . implode(',', array_fill(0, count($excludeIds), '?')) . ')';
+            $params = array_values(array_map('intval', (array)$excludeIds));
+        }
+
+        $stmt = $this->conn->prepare("SELECT COUNT(*) FROM electricity_tips WHERE is_active = 1 {$excludePlaceholders}");
+        $stmt->execute($params);
         $total = (int)$stmt->fetchColumn();
         if ($total === 0) return null;
         
         $offset = $dayIndex % $total;
-        // Note: $offset is server-calculated (not user input), safe to inline.
-        // PDO execute() binds as string which crashes MySQL OFFSET.
-        $stmt = $this->conn->query(
-            "SELECT id, title, message, category, icon, 
-                    is_active AS isActive, views_count AS viewsCount, likes_count AS likesCount, created_at
-             FROM electricity_tips 
-             WHERE is_active = 1 
-             ORDER BY id ASC 
-             LIMIT 1 OFFSET {$offset}"
-        );
+        $sql = "SELECT id, title, message, category, icon, 
+                       is_active AS isActive, views_count AS viewsCount, likes_count AS likesCount, created_at
+                FROM electricity_tips 
+                WHERE is_active = 1 {$excludePlaceholders}
+                ORDER BY id ASC 
+                LIMIT 1 OFFSET {$offset}";
+
+        $stmt = $this->conn->prepare($sql);
+        $stmt->execute($params);
         return $stmt->fetch(PDO::FETCH_ASSOC);
     }
 

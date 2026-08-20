@@ -389,13 +389,13 @@ class BillingNotificationService {
                 $this->queuePush($userId, $pushAlert);
             }
 
-            if (!$isPartial && !empty($paymentData)) {
+            if (!empty($paymentData)) {
                 $userStmt = $this->conn->prepare("SELECT email FROM users WHERE id = ?");
                 $userStmt->execute([$userId]);
                 $tenantEmail = $userStmt->fetchColumn();
                 
                 if ($tenantEmail) {
-                    $this->queueVerificationEmail($tenantEmail, $amountPaid, $paymentData);
+                    $this->queueVerificationEmail($tenantEmail, $amountPaid, $paymentData, $isPartial, $remainingBalance);
                 }
             }
 
@@ -409,8 +409,8 @@ class BillingNotificationService {
         }
     }
 
-    private function queueVerificationEmail($toEmail, $amountPaid, $paymentData) {
-        $subject = "Payment Successfully Verified";
+    private function queueVerificationEmail($toEmail, $amountPaid, $paymentData, $isPartial = false, $remainingBalance = 0) {
+        $subject = $isPartial ? "Partial Payment Verified" : "Payment Successfully Verified";
         
         $tenantName = htmlspecialchars($paymentData['tenantName'] ?? 'Tenant');
         $roomNumber = htmlspecialchars($paymentData['roomNumber'] ?? 'N/A');
@@ -420,31 +420,41 @@ class BillingNotificationService {
         $dateVerified = htmlspecialchars(date('Y-m-d H:i:s'));
         $verifiedBy = htmlspecialchars($paymentData['verifiedBy'] ?? 'Landlord');
         $amountFmt = number_format($amountPaid, 2);
+        $remBalFmt = number_format($remainingBalance, 2);
         
+        $statusText = $isPartial ? "PARTIALLY PAID" : "PAID";
+        $statusColor = $isPartial ? "#F59E0B" : "#10B981"; // Amber for partial, Green for full
+        $statusBg = $isPartial ? "#FEF3C7" : "#ECFDF5";
+        $headerColor = $isPartial ? "#F59E0B" : "#10B981";
+        
+        $statusMessage = $isPartial 
+            ? "Your partial payment has been applied. You still have a remaining balance of <strong>₱{$remBalFmt}</strong> for this billing period."
+            : "Your account has been updated successfully, and no outstanding balance remains for this billing period.";
+
         $htmlBody = "
             <div style=\"font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;\">
-                <div style=\"background-color: #10B981; padding: 20px; text-align: center;\">
+                <div style=\"background-color: {$headerColor}; padding: 20px; text-align: center;\">
                     <h1 style=\"color: white; margin: 0; font-size: 24px;\">Your Payment Has Been Successfully Reviewed and Accepted</h1>
                 </div>
                 <div style=\"padding: 20px; background-color: #f9fafb; border: 1px solid #e5e7eb;\">
                     <p>Dear <strong>{$tenantName}</strong>,</p>
                     <p>We are pleased to inform you that your recent payment has been reviewed and approved by your landlord.</p>
                     
-                    <h3 style=\"color: #111827; border-bottom: 2px solid #10B981; padding-bottom: 5px;\">Payment Details:</h3>
+                    <h3 style=\"color: #111827; border-bottom: 2px solid {$headerColor}; padding-bottom: 5px;\">Payment Details:</h3>
                     <table style=\"width: 100%; border-collapse: collapse; margin-bottom: 20px;\">
                         <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\"><strong>Tenant Name:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\">{$tenantName}</td></tr>
                         <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\"><strong>Room Number:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\">{$roomNumber}</td></tr>
                         <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\"><strong>Payment Method:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\">{$paymentMethod}</td></tr>
                         <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\"><strong>Reference Number:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\">{$refNumber}</td></tr>
-                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\"><strong>Amount Paid:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: #10B981;\">₱{$amountFmt}</td></tr>
+                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\"><strong>Amount Paid:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: {$headerColor};\">₱{$amountFmt}</td></tr>
                         <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\"><strong>Date Submitted:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\">{$dateSubmitted}</td></tr>
                         <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\"><strong>Date Verified:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\">{$dateVerified}</td></tr>
                         <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\"><strong>Verified By:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\">{$verifiedBy}</td></tr>
                     </table>
                     
-                    <div style=\"background-color: #ECFDF5; padding: 15px; border-left: 4px solid #10B981; margin-bottom: 20px;\">
-                        <h4 style=\"margin: 0 0 5px 0; color: #065F46;\">Payment Status: <span style=\"font-size: 18px;\">PAID</span></h4>
-                        <p style=\"margin: 0; color: #047857;\">Your account has been updated successfully, and no outstanding balance remains for this billing period.</p>
+                    <div style=\"background-color: {$statusBg}; padding: 15px; border-left: 4px solid {$headerColor}; margin-bottom: 20px;\">
+                        <h4 style=\"margin: 0 0 5px 0; color: #111827;\">Payment Status: <span style=\"font-size: 18px; color: {$headerColor};\">{$statusText}</span></h4>
+                        <p style=\"margin: 0; color: #4B5563;\">{$statusMessage}</p>
                     </div>
                     
                     <p>Thank you for completing your payment on time.</p>
@@ -459,7 +469,7 @@ class BillingNotificationService {
             </div>
         ";
         
-        $textBody = "Payment Successfully Verified\n\nDear {$tenantName},\n\nWe are pleased to inform you that your recent payment of ₱{$amountFmt} via {$paymentMethod} has been reviewed and approved by your landlord.\n\nPayment Status: PAID\n\nYour account has been updated successfully, and no outstanding balance remains for this billing period.\n\nThank you for completing your payment on time.";
+        $textBody = "Payment Successfully Verified\n\nDear {$tenantName},\n\nWe are pleased to inform you that your recent payment of ₱{$amountFmt} via {$paymentMethod} has been reviewed and approved by your landlord.\n\nPayment Status: {$statusText}\n\n" . strip_tags($statusMessage) . "\n\nThank you for completing your payment on time.";
 
         require_once __DIR__ . '/../utils/QueueService.php';
         $queue = new QueueService($this->conn);
@@ -620,6 +630,55 @@ class BillingNotificationService {
             ]);
             return $this->conn->lastInsertId();
         }
+    }
+
+    // =========================================================
+    // LANDLORD NOTIFICATIONS
+    // =========================================================
+    public function sendPaymentSubmittedAlert($roomId, $tenantId, $tenantName, $amount, $paymentMethod, $referenceNumber, $paymentId) {
+        // Find the landlord for this room
+        $stmt = $this->conn->prepare("
+            SELECT id, name 
+            FROM users 
+            WHERE role = 'landlord'
+            LIMIT 1
+        ");
+        $stmt->execute();
+        $landlord = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$landlord) return false;
+
+        $landlordId = $landlord['id'];
+
+        // Prevent duplicate notification during retries
+        $checkStmt = $this->conn->prepare("
+            SELECT id FROM notification_history 
+            WHERE user_id = ? AND type = 'payment_submitted' AND JSON_EXTRACT(data_json, '$.paymentId') = ?
+            LIMIT 1
+        ");
+        $checkStmt->execute([$landlordId, $paymentId]);
+        if ($checkStmt->fetchColumn()) return false;
+
+        $alert = [
+            'type' => 'payment_submitted',
+            'category' => 'system',
+            'severity' => 'info',
+            'title' => 'New Payment Received',
+            'message' => "{$tenantName} submitted ₱" . number_format($amount, 2) . " for Room {$roomId}. Payment requires verification.",
+            'data' => [
+                'paymentId' => $paymentId,
+                'roomId' => $roomId,
+                'tenantId' => $tenantId,
+                'amount' => $amount,
+                'method' => $paymentMethod,
+                'reference' => $referenceNumber
+            ]
+        ];
+
+        $notifId = $this->saveNotification($landlordId, $roomId, $alert);
+        $this->queuePush($landlordId, $alert);
+        
+        return $notifId;
     }
 
     private function queuePush($userId, $alert) {

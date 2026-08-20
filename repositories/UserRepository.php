@@ -23,13 +23,18 @@ class UserRepository {
     }
 
     public function createUser($name, $email, $passwordHash, $role, $roomId = null) {
-        $stmt = $this->conn->prepare("INSERT INTO users (name, email, password_hash, role, room_id) VALUES (?, ?, ?, ?, ?)");
+        $stmt = $this->conn->prepare("INSERT INTO users (name, email, password_hash, role, room_id, onboarding_completed) VALUES (?, ?, ?, ?, ?, 0)");
         if ($stmt->execute([$name, $email, $passwordHash, $role, $roomId])) {
             return $this->conn->lastInsertId();
         }
         return false;
     }
     
+    public function completeOnboarding($userId) {
+        $stmt = $this->conn->prepare("UPDATE users SET onboarding_completed = 1 WHERE id = ?");
+        return $stmt->execute([$userId]);
+    }
+
     public function markEmailAsVerified($email) {
         $stmt = $this->conn->prepare("UPDATE users SET is_verified = 1 WHERE email = ?");
         return $stmt->execute([$email]);

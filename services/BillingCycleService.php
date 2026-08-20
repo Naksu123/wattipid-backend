@@ -60,7 +60,7 @@ class BillingCycleService {
             $monthlyRent = $roomRow ? (float)$roomRow['monthly_rent'] : 0.00;
 
             // Fetch previous cycle to get previous reading and previous balance
-            $prevQuery = $this->db->prepare("SELECT current_reading, grand_total, payment_status FROM billing_cycles WHERE room_id = ? AND id < ? ORDER BY id DESC LIMIT 1");
+            $prevQuery = $this->db->prepare("SELECT current_reading, grand_total, amount_paid, payment_status FROM billing_cycles WHERE room_id = ? AND id < ? ORDER BY id DESC LIMIT 1");
             $prevQuery->execute([$roomId, $activeCycle['id']]);
             $prevCycle = $prevQuery->fetch(PDO::FETCH_ASSOC);
             
@@ -69,8 +69,8 @@ class BillingCycleService {
             
             // Check previous balance if unpaid
             $previousBalance = 0.00;
-            if ($prevCycle && in_array($prevCycle['payment_status'], ['unpaid', 'overdue', 'rejected'])) {
-                $previousBalance = (float)$prevCycle['grand_total'];
+            if ($prevCycle && in_array($prevCycle['payment_status'], ['unpaid', 'overdue', 'rejected', 'partially_paid'])) {
+                $previousBalance = max(0.00, (float)$prevCycle['grand_total'] - (float)($prevCycle['amount_paid'] ?? 0));
             }
 
             // ================================================================
