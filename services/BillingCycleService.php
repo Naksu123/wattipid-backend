@@ -105,9 +105,11 @@ class BillingCycleService {
             $grandTotal = $electricityCharge + $miscellaneousFee + $monthlyRent + $previousBalance + $additionalCharges + $penaltyAmount - $discounts;
             
             $invoiceNumber = 'WT-' . date('Ym', strtotime($activeCycle['cycle_end'])) . '-' . $activeCycle['id'];
+            $closingPaymentStatus = ($grandTotal <= 0.00) ? 'paid' : ($activeCycle['payment_status'] ?? 'unpaid');
 
             $update = $this->db->prepare("UPDATE billing_cycles SET 
                 status = 'completed', 
+                payment_status = ?,
                 total_kwh = ?, 
                 total_cost = ?, 
                 due_date = DATE_ADD(cycle_end, INTERVAL 3 DAY),
@@ -132,6 +134,7 @@ class BillingCycleService {
                 WHERE id = ?");
                 
             $update->execute([
+                $closingPaymentStatus,
                 $finalKwh, 
                 $electricityCharge,   // total_cost = correct electricity charge
                 $previousReading, 
@@ -168,7 +171,7 @@ class BillingCycleService {
                 $checkEmpty = $this->db->prepare("SELECT id FROM billing_cycles WHERE room_id = ? AND DATE_FORMAT(cycle_start, '%Y-%m') = DATE_FORMAT(?, '%Y-%m')");
                 $checkEmpty->execute([$roomId, $nextCycleStart]);
                 if (!$checkEmpty->fetch()) {
-                    $insert = $this->db->prepare("INSERT INTO billing_cycles (room_id, tenant_name, cycle_start, cycle_end, total_kwh, total_cost, status, due_date, invoice_number, current_reading, previous_reading) VALUES (?, ?, ?, ?, 0, 0, 'completed', DATE_ADD(?, INTERVAL 3 DAY), ?, ?, ?)");
+                    $insert = $this->db->prepare("INSERT INTO billing_cycles (room_id, tenant_name, cycle_start, cycle_end, total_kwh, total_cost, grand_total, status, payment_status, due_date, invoice_number, current_reading, previous_reading) VALUES (?, ?, ?, ?, 0, 0, 0.00, 'completed', 'paid', DATE_ADD(?, INTERVAL 3 DAY), ?, ?, ?)");
                     $insert->execute([$roomId, $activeCycle['tenant_name'], $nextCycleStart, $nextCycleEnd, $nextCycleEnd, $emptyInvoice, $currentReading, $currentReading]);
                 }
                 
@@ -205,13 +208,20 @@ class BillingCycleService {
             $endDate = date('Y-m-d 23:59:59', strtotime($nextCycleStart . ' -1 day'));
 
             // Check if active cycle already exists to prevent duplicates
-            $check = $this->db->prepare("SELECT id FROM billing_cycles WHERE room_id = ? AND status = 'active'");
+            $check = $this->db->prepare("SELECT id, tenant_name FROM billing_cycles WHERE room_id = ? AND status = 'active'");
             $check->execute([$roomId]);
+            $existingActive = $check->fetch(PDO::FETCH_ASSOC);
             
             $checkMonth = $this->db->prepare("SELECT id FROM billing_cycles WHERE room_id = ? AND DATE_FORMAT(cycle_start, '%Y-%m') = DATE_FORMAT(?, '%Y-%m')");
             $checkMonth->execute([$roomId, $startDate]);
             
-            if (!$check->fetch() && !$checkMonth->fetch()) {
+            if ($existingActive) {
+                // Adopt active cycle and ensure tenant_name matches the currently assigned tenant
+                if ($existingActive['tenant_name'] !== $room['tenant_name']) {
+                    $upd = $this->db->prepare("UPDATE billing_cycles SET tenant_name = ? WHERE id = ?");
+                    $upd->execute([$room['tenant_name'], $existingActive['id']]);
+                }
+            } else if (!$checkMonth->fetch()) {
                 $insert = $this->db->prepare("INSERT INTO billing_cycles (room_id, tenant_name, cycle_start, cycle_end, status) VALUES (?, ?, ?, ?, 'active')");
                 $insert->execute([$roomId, $room['tenant_name'], $startDate, $endDate]);
             }

@@ -115,6 +115,10 @@ class Router {
                 $this->authController->requestPasswordReset($data);
                 return true;
 
+            case 'testEmailDelivery':
+                $this->authController->testEmailDelivery($data);
+                return true;
+
             case 'getActiveTerms':
                 ResponseHelper::sendRaw($this->termsController->getActiveTerms());
                 return true;
@@ -384,6 +388,10 @@ class Router {
 
             case 'getBillingDetails':
                 $this->paymentController->getBillingDetails($authenticatedUser, $data);
+                return true;
+
+            case 'getTenantBillingOverview':
+                $this->paymentController->getTenantBillingOverview($authenticatedUser, $data);
                 return true;
 
             case 'getBillingHistory':

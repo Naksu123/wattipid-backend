@@ -50,9 +50,9 @@ class DashboardSyncService {
 
             // Revenue — strictly calculated from COMPLETED billing cycles (Actual generated bills)
             $revQ = "SELECT 
-                COALESCE(SUM(CASE WHEN payment_status = 'paid' THEN (total_cost + penalty_amount) ELSE 0 END), 0) as collected,
-                COALESCE(SUM(CASE WHEN payment_status IN ('unpaid', 'overdue') AND status = 'completed' THEN (total_cost + penalty_amount) ELSE 0 END), 0) as outstanding,
-                COALESCE(SUM(CASE WHEN status = 'completed' THEN (total_cost + penalty_amount) ELSE 0 END), 0) as totalBilled
+                COALESCE(SUM(CASE WHEN payment_status = 'paid' THEN grand_total ELSE COALESCE(amount_paid, 0) END), 0) as collected,
+                COALESCE(SUM(CASE WHEN payment_status IN ('unpaid', 'overdue', 'partially_paid') AND status = 'completed' THEN GREATEST(0.00, grand_total - COALESCE(amount_paid, 0)) ELSE 0 END), 0) as outstanding,
+                COALESCE(SUM(CASE WHEN status = 'completed' THEN grand_total ELSE 0 END), 0) as totalBilled
                 FROM billing_cycles";
             $revStmt = $this->conn->query($revQ);
             $rev = $revStmt->fetch(PDO::FETCH_ASSOC);
@@ -124,11 +124,11 @@ class DashboardSyncService {
             // Use billing_cycles as the source of truth for payment status
             $q = "SELECT 
                 COUNT(*) as total,
-                COALESCE(SUM(CASE WHEN payment_status = 'unpaid' OR payment_status = 'overdue' THEN 1 ELSE 0 END), 0) as pending,
+                COALESCE(SUM(CASE WHEN payment_status = 'unpaid' OR payment_status = 'overdue' OR payment_status = 'partially_paid' THEN 1 ELSE 0 END), 0) as pending,
                 COALESCE(SUM(CASE WHEN payment_status = 'paid' THEN 1 ELSE 0 END), 0) as verified,
-                COALESCE(SUM(total_cost + COALESCE(penalty_amount, 0)), 0) as totalAmount,
-                COALESCE(SUM(CASE WHEN payment_status = 'paid' THEN (total_cost + COALESCE(penalty_amount, 0)) ELSE 0 END), 0) as collectedAmount,
-                COALESCE(SUM(CASE WHEN payment_status = 'unpaid' OR payment_status = 'overdue' THEN (total_cost + COALESCE(penalty_amount, 0)) ELSE 0 END), 0) as outstandingAmount
+                COALESCE(SUM(grand_total), 0) as totalAmount,
+                COALESCE(SUM(CASE WHEN payment_status = 'paid' THEN grand_total ELSE COALESCE(amount_paid, 0) END), 0) as collectedAmount,
+                COALESCE(SUM(CASE WHEN payment_status IN ('unpaid', 'overdue', 'partially_paid') THEN GREATEST(0.00, grand_total - COALESCE(amount_paid, 0)) ELSE 0 END), 0) as outstandingAmount
                 FROM billing_cycles WHERE status = 'completed'";
             $stmt = $this->conn->query($q);
             $result = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -165,11 +165,16 @@ class DashboardSyncService {
 
         try {
             $q = "SELECT b.id, b.room_id, b.total_cost, b.penalty_amount, b.due_date, b.payment_status, 
-                         b.tenant_name, r.room_name, u.id as tenant_id
+                         b.tenant_name, r.room_name, u.id as tenant_id,
+                         b.grand_total, b.amount_paid, b.miscellaneous_fee, b.electricity_charge,
+                         GREATEST(0.00, b.grand_total - COALESCE(b.amount_paid, 0.00)) as outstanding_balance,
+                         GREATEST(0.00, b.grand_total - COALESCE(b.penalty_amount, 0) - COALESCE(b.amount_paid, 0.00)) as original_balance
                   FROM billing_cycles b
-                  LEFT JOIN rooms r ON b.room_id = r.room_id
-                  LEFT JOIN users u ON u.room_id = b.room_id AND u.role = 'tenant'
-                  WHERE b.status = 'completed' AND (b.payment_status = 'unpaid' OR b.payment_status = 'overdue')
+                  JOIN rooms r ON b.room_id = r.room_id AND r.status = 'occupied'
+                  JOIN users u ON u.room_id = b.room_id AND u.role = 'tenant' AND (u.name = b.tenant_name OR r.tenant_name = b.tenant_name)
+                  WHERE b.status = 'completed' 
+                    AND (b.payment_status = 'unpaid' OR b.payment_status = 'overdue' OR b.payment_status = 'partially_paid')
+                    AND (b.grand_total - COALESCE(b.amount_paid, 0.00)) > 0.00
                   ORDER BY b.due_date ASC";
             $stmt = $this->conn->query($q);
             return $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -185,9 +190,9 @@ class DashboardSyncService {
         try {
             $billsDueToday = $this->conn->query("SELECT COUNT(*) FROM billing_cycles WHERE payment_status = 'unpaid' AND DATE(due_date) = CURDATE() AND status = 'completed'")->fetchColumn();
             $billsDueTomorrow = $this->conn->query("SELECT COUNT(*) FROM billing_cycles WHERE payment_status = 'unpaid' AND DATE(due_date) = DATE_ADD(CURDATE(), INTERVAL 1 DAY) AND status = 'completed'")->fetchColumn();
-            $overdueBills = $this->conn->query("SELECT COUNT(*) FROM billing_cycles WHERE payment_status = 'overdue'")->fetchColumn();
-            $billsWithPenalties = $this->conn->query("SELECT COUNT(*) FROM billing_cycles WHERE penalty_amount > 0 AND payment_status = 'overdue'")->fetchColumn();
-            $totalOutstanding = $this->conn->query("SELECT COALESCE(SUM(total_cost + COALESCE(penalty_amount, 0)), 0) FROM billing_cycles WHERE payment_status IN ('overdue', 'unpaid') AND status = 'completed'")->fetchColumn();
+            $overdueBills = $this->conn->query("SELECT COUNT(*) FROM billing_cycles WHERE payment_status = 'overdue' AND (grand_total - COALESCE(amount_paid, 0.00)) > 0.00")->fetchColumn();
+            $billsWithPenalties = $this->conn->query("SELECT COUNT(*) FROM billing_cycles WHERE penalty_amount > 0 AND payment_status = 'overdue' AND (grand_total - COALESCE(amount_paid, 0.00)) > 0.00")->fetchColumn();
+            $totalOutstanding = $this->conn->query("SELECT COALESCE(SUM(GREATEST(0.00, grand_total - COALESCE(amount_paid, 0))), 0) FROM billing_cycles WHERE payment_status IN ('overdue', 'unpaid', 'partially_paid') AND status = 'completed'")->fetchColumn();
             $totalPenaltiesCollected = $this->conn->query("SELECT COALESCE(SUM(penalty_amount), 0) FROM billing_cycles WHERE penalty_amount > 0")->fetchColumn();
 
             return [

@@ -219,6 +219,13 @@ class RoomService {
             $stmt->execute([$roomId, $tenantName]);
 
             // 5. Vacate Room
+            // 4.5. Clean up lingering billing cycles for the vacated room
+            // Mark zero-balance completed cycles as paid so they do not linger as fake unpaid debts
+            $this->conn->prepare("UPDATE billing_cycles SET payment_status = 'paid' WHERE room_id = ? AND status = 'completed' AND (grand_total <= 0 OR grand_total IS NULL)")->execute([$roomId]);
+            
+            // Clear tenant_name on any active cycle for the room so departed names do not linger
+            $this->conn->prepare("UPDATE billing_cycles SET tenant_name = NULL WHERE room_id = ? AND status = 'active'")->execute([$roomId]);
+
             $this->roomRepo->markAsVacant($roomId);
 
             $this->conn->commit();
@@ -254,6 +261,10 @@ class RoomService {
         $room = $this->roomRepo->findById($roomId);
         if (!$room) return ['success' => false, 'message' => 'Room not found'];
 
+        // Get the email from the last invitation for this room BEFORE cancelling pending ones
+        $lastInvitation = $this->invitationRepo->getLatestInvitationByRoom($roomId);
+        $email = $lastInvitation ? $lastInvitation['email'] : null;
+
         // Cancel existing pending invitations for this room
         $this->invitationRepo->cancelPendingByRoom($roomId);
 
@@ -261,10 +272,6 @@ class RoomService {
         $accessCode = $this->generateAccessCode();
         $codeHash = hash('sha256', $accessCode);
         $codeEncrypted = SecurityMiddleware::encryptAccessCode($accessCode);
-
-        // Get the email from the last invitation for this room (if any)
-        $lastInvitation = $this->invitationRepo->getPendingInvitationByRoom($roomId);
-        $email = $lastInvitation ? $lastInvitation['email'] : null;
 
         if ($email) {
             $this->invitationRepo->createInvitation($email, $roomId, $codeHash, $codeEncrypted, $userId);
@@ -337,6 +344,16 @@ class RoomService {
             return ['success' => false, 'message' => 'Room not found.'];
         }
 
+        // Duplicate submission prevention (Double-tap / rapid retry protection within 30 seconds)
+        $recentInvite = $this->invitationRepo->getRecentPendingInvitation($email, $roomId, 30);
+        if ($recentInvite) {
+            return [
+                'success' => true,
+                'message' => 'Invitation sent successfully.',
+                'duplicate_prevented' => true
+            ];
+        }
+
         // Generate ONE access code — this is the single source of truth
         $accessCode = $this->generateAccessCode();
         $codeHash = hash('sha256', $accessCode);
@@ -345,17 +362,30 @@ class RoomService {
         // Store in invitations table (cancels any previous pending invitations)
         $this->invitationRepo->createInvitation($email, $roomId, $codeHash, $codeEncrypted, $landlordId);
         $expiresAt = date('Y-m-d H:i:s', time() + (24 * 3600));
+        $roomNumber = $room['room_number'] ?? $roomId;
 
-        // Send the SAME code via email — no new code generated here
-        $emailResult = queueInvitationEmail($this->conn, $email, 'Tenant', $roomId, $accessCode, $expiresAt);
+        // Send directly via Brevo email service (synchronous dispatch for immediate delivery & feedback)
+        $emailResult = sendInvitationEmailDirect($this->conn, $email, 'Tenant', $roomNumber, $accessCode, $expiresAt);
 
-        if ($emailResult) {
+        if ($emailResult['success']) {
             if ($room['status'] === 'vacant') {
                 $this->roomRepo->updateStatus($roomId, 'on_process', null, null);
             }
-            return ['success' => true, 'message' => 'Invitation created and email sent successfully.'];
+            return [
+                'success' => true, 
+                'message' => 'Invitation sent successfully.',
+                'data' => [
+                    'provider' => $emailResult['provider'] ?? EMAIL_PROVIDER,
+                    'messageId' => $emailResult['messageId'] ?? null
+                ]
+            ];
         } else {
-            return ['success' => false, 'message' => 'Invitation saved, but failed to queue email.'];
+            // Queue as fallback so background worker can retry if available
+            queueInvitationEmail($this->conn, $email, 'Tenant', $roomNumber, $accessCode, $expiresAt);
+            return [
+                'success' => false, 
+                'message' => 'Unable to send the tenant invitation. Please try again.'
+            ];
         }
     }
 
@@ -389,10 +419,27 @@ class RoomService {
         $this->invitationRepo->resendInvitation($invitationId);
         $expiresAt = date('Y-m-d H:i:s', time() + (24 * 3600));
 
-        // Re-send the SAME code via email
-        queueInvitationEmail($this->conn, $invitation['email'], $invitation['tenant_name'] ?? 'Tenant', $invitation['room_id'], $accessCode, $expiresAt);
+        // Re-send directly via Brevo email service
+        $room = $this->roomRepo->findById($invitation['room_id']);
+        $roomNumber = $room['room_number'] ?? $invitation['room_id'];
+        $emailResult = sendInvitationEmailDirect($this->conn, $invitation['email'], $invitation['tenant_name'] ?? 'Tenant', $roomNumber, $accessCode, $expiresAt);
 
-        return ['success' => true, 'message' => 'Invitation resent successfully. The same access code has been sent again.'];
+        if ($emailResult['success']) {
+            return [
+                'success' => true, 
+                'message' => 'Invitation sent successfully.',
+                'data' => [
+                    'provider' => $emailResult['provider'] ?? EMAIL_PROVIDER,
+                    'messageId' => $emailResult['messageId'] ?? null
+                ]
+            ];
+        } else {
+            queueInvitationEmail($this->conn, $invitation['email'], $invitation['tenant_name'] ?? 'Tenant', $roomNumber, $accessCode, $expiresAt);
+            return [
+                'success' => false, 
+                'message' => 'Unable to send the tenant invitation. Please try again.'
+            ];
+        }
     }
 
     public function cancelInvitation($invitationId) {
@@ -409,27 +456,87 @@ class RoomService {
      * Compares the hash of the entered code against the stored hash.
      */
     public function verifyAccessCode($email, $accessCode) {
+        $email = strtolower(trim($email ?? ''));
+        $accessCode = trim($accessCode ?? '');
+
+        if (empty($email) || empty($accessCode)) {
+            return [
+                'success' => false,
+                'error_code' => 'INVALID_REQUEST',
+                'message' => 'Email and access code are required.'
+            ];
+        }
+
+        if (strlen($accessCode) !== 6 || !ctype_digit($accessCode)) {
+            return [
+                'success' => false,
+                'error_code' => 'INVALID_ACCESS_CODE',
+                'message' => 'The Access Code must be a 6-digit number.'
+            ];
+        }
+
         $invitation = $this->invitationRepo->getPendingInvitationByEmail($email);
 
         if (!$invitation) {
-            return ['success' => false, 'message' => 'No invitation exists for this email.'];
+            // Check existing invitation history to give precise, actionable feedback
+            $latestInvitation = $this->invitationRepo->getLatestInvitationByEmail($email);
+            if ($latestInvitation) {
+                if ($latestInvitation['status'] === 'registered') {
+                    return [
+                        'success' => false,
+                        'error_code' => 'INVITATION_ALREADY_USED',
+                        'message' => 'This invitation has already been used to create an account. Please sign in instead.'
+                    ];
+                }
+                if ($latestInvitation['status'] === 'cancelled') {
+                    return [
+                        'success' => false,
+                        'error_code' => 'INVITATION_CANCELLED',
+                        'message' => 'This invitation has been cancelled or replaced by a new access code. Please check your latest invitation email or contact your landlord.'
+                    ];
+                }
+                if ($latestInvitation['status'] === 'expired') {
+                    return [
+                        'success' => false,
+                        'error_code' => 'ACCESS_CODE_EXPIRED',
+                        'message' => 'Your Access Code has expired. Please contact your landlord to request a new invitation.'
+                    ];
+                }
+            }
+
+            return [
+                'success' => false,
+                'error_code' => 'INVITATION_NOT_FOUND',
+                'message' => 'No active invitation was found for this email address. Please verify your email or contact your landlord.'
+            ];
         }
 
+        // Check expiration
         if (strtotime($invitation['expires_at']) < time()) {
-            return ['success' => false, 'message' => 'Your Access Code has expired. Please contact your landlord to request a new invitation.'];
+            $this->invitationRepo->markAsExpired($invitation['id']);
+            return [
+                'success' => false,
+                'error_code' => 'ACCESS_CODE_EXPIRED',
+                'message' => 'Your Access Code has expired. Please contact your landlord to request a new invitation.'
+            ];
         }
 
+        // Timing-safe comparison of code hash
         $enteredHash = hash('sha256', $accessCode);
-        if ($enteredHash !== $invitation['access_code_hash']) {
-            return ['success' => false, 'message' => 'The Access Code you entered is incorrect.'];
+        if (!hash_equals($invitation['access_code_hash'], $enteredHash)) {
+            return [
+                'success' => false,
+                'error_code' => 'INVALID_ACCESS_CODE',
+                'message' => 'The Access Code you entered is incorrect. Please check your email and try again.'
+            ];
         }
 
-        // Don't expose internal data — return only what the frontend needs
+        // Don't expose internal sensitive data — return only what the frontend needs
         return [
             'success' => true, 
             'message' => 'Access code verified.', 
             'data' => [
-                'invitation_id' => $invitation['id'],
+                'invitation_id' => (int)$invitation['id'],
                 'room_id' => $invitation['room_id'],
                 'email' => $invitation['email']
             ]

@@ -19,7 +19,7 @@ try {
     // Find all overdue billing cycles that are multiples of 3 days overdue
     // DATEDIFF(NOW(), due_date) returns positive days if overdue
     $stmt = $conn->prepare("
-        SELECT bc.id, bc.room_id, bc.total_cost, bc.penalty_amount, bc.due_date, r.tenant_id
+        SELECT bc.id, bc.room_id, bc.total_cost, bc.penalty_amount, bc.due_date, bc.grand_total, bc.amount_paid, r.tenant_id
         FROM billing_cycles bc
         JOIN rooms r ON bc.room_id = r.id
         WHERE bc.status = 'completed'
@@ -36,7 +36,7 @@ try {
 
     $remindedCount = 0;
     foreach ($overdueCycles as $cycle) {
-        $totalDue = (float)$cycle['total_cost'] + (float)($cycle['penalty_amount'] ?? 0);
+        $totalDue = max(0.0, (float)(($cycle['grand_total'] ?? 0) > 0 ? (($cycle['grand_total'] ?? 0) - ($cycle['amount_paid'] ?? 0)) : ($cycle['total_cost'] + ($cycle['penalty_amount'] ?? 0))));
         $daysOverdue = (int) (new DateTime())->diff(new DateTime($cycle['due_date']))->format('%a');
 
         // We use the new sendManualReminder method which can double as an auto-reminder sender

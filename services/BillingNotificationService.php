@@ -168,7 +168,7 @@ class BillingNotificationService {
 
         // Find completed but unpaid billing cycles with due dates
         $stmt = $this->conn->prepare("
-            SELECT id, cycle_start, cycle_end, total_cost, penalty_amount, due_date, payment_status
+            SELECT id, cycle_start, cycle_end, total_cost, penalty_amount, due_date, payment_status, grand_total, amount_paid
             FROM billing_cycles 
             WHERE room_id = ? 
               AND status = 'completed' 
@@ -185,7 +185,7 @@ class BillingNotificationService {
         $now = new DateTime();
         $daysUntilDue = (int) $now->diff($dueDate)->format('%r%a');
 
-        $totalDue = (float) $cycle['total_cost'] + (float) ($cycle['penalty_amount'] ?? 0);
+        $totalDue = max(0.0, (float)(($cycle['grand_total'] ?? 0) > 0 ? (($cycle['grand_total'] ?? 0) - ($cycle['amount_paid'] ?? 0)) : ($cycle['total_cost'] + ($cycle['penalty_amount'] ?? 0))));
 
         $reminders = [
             ['days' => 2, 'type' => 'due_date_2d',
@@ -233,7 +233,7 @@ class BillingNotificationService {
 
         // Find overdue billing cycles
         $stmt = $this->conn->prepare("
-            SELECT id, cycle_start, cycle_end, total_cost, penalty_amount, due_date, payment_status
+            SELECT id, cycle_start, cycle_end, total_cost, penalty_amount, due_date, payment_status, grand_total, amount_paid
             FROM billing_cycles 
             WHERE room_id = ? 
               AND status = 'completed' 
@@ -245,7 +245,7 @@ class BillingNotificationService {
 
         if (!$cycle) return [];
 
-        $totalDue = (float) $cycle['total_cost'] + (float) ($cycle['penalty_amount'] ?? 0);
+        $totalDue = max(0.0, (float)(($cycle['grand_total'] ?? 0) > 0 ? (($cycle['grand_total'] ?? 0) - ($cycle['amount_paid'] ?? 0)) : ($cycle['total_cost'] + ($cycle['penalty_amount'] ?? 0))));
         $dueDate = new DateTime($cycle['due_date']);
         $now = new DateTime();
         $daysOverdue = (int) $now->diff($dueDate)->format('%a');
@@ -471,15 +471,8 @@ class BillingNotificationService {
         
         $textBody = "Payment Successfully Verified\n\nDear {$tenantName},\n\nWe are pleased to inform you that your recent payment of ₱{$amountFmt} via {$paymentMethod} has been reviewed and approved by your landlord.\n\nPayment Status: {$statusText}\n\n" . strip_tags($statusMessage) . "\n\nThank you for completing your payment on time.";
 
-        require_once __DIR__ . '/../utils/QueueService.php';
-        $queue = new QueueService($this->conn);
-        $queue->push('email', [
-            'to' => $toEmail,
-            'name'  => $tenantName,
-            'subject'  => $subject,
-            'htmlBody' => $htmlBody,
-            'textBody' => $textBody
-        ]);
+        require_once __DIR__ . '/../utils/email_service.php';
+        sendEmail($toEmail, $tenantName, $subject, $htmlBody, $textBody, 'payment_verified');
     }
 
     public function sendPaymentRejectionAlert($roomId, $userId, $amount, $reason) {
@@ -517,14 +510,16 @@ class BillingNotificationService {
                 $this->queuePush($userId, $alert);
             }
 
-            require_once __DIR__ . '/../utils/QueueService.php';
-            $queue = new QueueService($this->conn);
-            $queue->push('email_notification', [
-                'userId' => $userId,
-                'subject' => 'Payment Rejected',
-                'body' => "Your payment of ₱" . number_format($amount, 2) . " has been rejected.\n\nReason: \"$reason\"\n\nPlease log in to Wattipid and upload a new payment proof.",
-                'template' => 'payment_rejected'
-            ]);
+            $userStmt = $this->conn->prepare("SELECT email, name FROM users WHERE id = ?");
+            $userStmt->execute([$userId]);
+            $tenantUser = $userStmt->fetch(PDO::FETCH_ASSOC);
+            if ($tenantUser && !empty($tenantUser['email'])) {
+                require_once __DIR__ . '/../utils/email_service.php';
+                $rejectionSubject = "Payment Rejected - Wattipid";
+                $rejectionHtml = "<p>Your payment of ₱" . number_format($amount, 2) . " has been rejected.</p><p><strong>Reason:</strong> " . htmlspecialchars($reason) . "</p><p>Please log in to Wattipid and upload a new payment proof.</p>";
+                $rejectionText = "Your payment of ₱" . number_format($amount, 2) . " has been rejected.\n\nReason: \"$reason\"\n\nPlease log in to Wattipid and upload a new payment proof.";
+                sendEmail($tenantUser['email'], $tenantUser['name'] ?? '', $rejectionSubject, $rejectionHtml, $rejectionText, 'payment_rejected');
+            }
 
             return true;
         } catch (Exception $e) {
@@ -683,14 +678,11 @@ class BillingNotificationService {
 
     private function queuePush($userId, $alert) {
         try {
-            require_once __DIR__ . '/../utils/QueueService.php';
-            $queue = new QueueService($this->conn);
-            $queue->push('push_notification', [
-                'userId' => $userId,
-                'alert' => $alert,
-            ]);
+            require_once __DIR__ . '/../utils/notification_engine.php';
+            $engine = new NotificationEngine($this->conn);
+            $engine->sendPushNotification($userId, $alert);
         } catch (Exception $e) {
-            error_log("[BillingNotifSvc] Push queue error: " . $e->getMessage());
+            error_log("[BillingNotifSvc] Push direct send error: " . $e->getMessage());
         }
     }
 }

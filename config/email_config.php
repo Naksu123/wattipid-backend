@@ -5,7 +5,7 @@
 
 // ============ EMAIL PROVIDER SELECTION ============
 // Options: 'sendgrid', 'brevo', 'mock'
-define('EMAIL_PROVIDER', 'brevo');
+if (!defined('EMAIL_PROVIDER')) define('EMAIL_PROVIDER', config('EMAIL_PROVIDER', 'brevo'));
 
 // Sign up at https://sendgrid.com (100 emails/day free tier)
 define('SENDGRID_API_KEY', config('SENDGRID_API_KEY', ''));

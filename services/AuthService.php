@@ -210,22 +210,30 @@ class AuthService {
         $invitationId = null;
 
         if ($role === 'tenant') {
+            $email = strtolower(trim($email ?? ''));
+            $code = trim($code ?? '');
+
             if (!$code) {
-                return ['success' => false, 'message' => 'Access code is required for tenants'];
+                return ['success' => false, 'error_code' => 'INVALID_REQUEST', 'message' => 'Access code is required for tenants'];
             }
 
             $invitation = $this->invitationRepo->getPendingInvitationByEmail($email);
             if (!$invitation) {
+                $latest = $this->invitationRepo->getLatestInvitationByEmail($email);
+                if ($latest && $latest['status'] === 'registered') {
+                    return ['success' => false, 'error_code' => 'INVITATION_ALREADY_USED', 'message' => 'This invitation has already been used to create an account.'];
+                }
                 $this->logAccessCodeAudit('Failed Registration - No Invitation', $email, $_SERVER['REMOTE_ADDR'] ?? 'unknown');
-                return ['success' => false, 'message' => 'No invitation exists for this email.'];
+                return ['success' => false, 'error_code' => 'INVITATION_NOT_FOUND', 'message' => 'No active invitation exists for this email.'];
             }
             if (strtotime($invitation['expires_at']) < time()) {
+                $this->invitationRepo->markAsExpired($invitation['id']);
                 $this->logAccessCodeAudit('Failed Registration - Expired', $email, $_SERVER['REMOTE_ADDR'] ?? 'unknown');
-                return ['success' => false, 'message' => 'Your Access Code has expired. Please contact your landlord to request a new invitation.'];
+                return ['success' => false, 'error_code' => 'ACCESS_CODE_EXPIRED', 'message' => 'Your Access Code has expired. Please contact your landlord to request a new invitation.'];
             }
-            if (hash('sha256', $code) !== $invitation['access_code_hash']) {
+            if (!hash_equals($invitation['access_code_hash'], hash('sha256', $code))) {
                 $this->logAccessCodeAudit('Failed Registration - Wrong Code', $email, $_SERVER['REMOTE_ADDR'] ?? 'unknown');
-                return ['success' => false, 'message' => 'The Access Code you entered is incorrect.'];
+                return ['success' => false, 'error_code' => 'INVALID_ACCESS_CODE', 'message' => 'The Access Code you entered is incorrect.'];
             }
             $roomId = $invitation['room_id'];
             $invitationId = $invitation['id'];
@@ -309,30 +317,39 @@ class AuthService {
         $user = $this->userRepo->findByEmail($email);
         if (!$user) {
             // Anti-enumeration: still say it was sent even if the email doesn't exist
-            return ['success' => true, 'message' => 'If this email is registered, you will receive a reset code.'];
+            return ['success' => true, 'message' => 'Recovery email sent. Please check your inbox.'];
+        }
+
+        // Duplicate submission prevention (Double-tap / rapid retry protection within 45 seconds)
+        $recentToken = $this->passwordResetRepo->getRecentResetToken($email, 45);
+        if ($recentToken) {
+            return [
+                'success' => true,
+                'message' => 'Recovery email sent. Please check your inbox.',
+                'duplicate_prevented' => true
+            ];
         }
 
         $otp = rand(100000, 999999);
         $this->passwordResetRepo->createResetToken($email, $otp);
 
-        $subject = "Password Reset Code - Wattipid";
-        $body = "
-            <div style='font-family: sans-serif; padding: 20px;'>
-                <h2>Password Reset Request</h2>
-                <p>You requested to reset your Wattipid account password. Use the following code to proceed:</p>
-                <h1 style='color: #2196F3; letter-spacing: 5px;'>$otp</h1>
-                <p>This code will expire in 10 minutes.</p>
-                <hr/>
-                <p style='font-size: 12px; color: #666;'>If you didn't request this, please ignore this email.</p>
-            </div>
-        ";
-        
-        $result = queueEmail($this->conn, $email, "", $subject, $body, "");
+        // Send OTP directly using centralized email service
+        $result = sendPasswordResetEmail($this->conn, $email, $otp, $user['name'] ?? '');
 
-        if ($result) {
-            return ['success' => true, 'message' => 'Reset code sent to your email'];
+        if ($result['success']) {
+            return [
+                'success' => true, 
+                'message' => 'Recovery email sent. Please check your inbox.',
+                'data' => [
+                    'provider' => $result['provider'] ?? EMAIL_PROVIDER,
+                    'messageId' => $result['messageId'] ?? null
+                ]
+            ];
         } else {
-            return ['success' => false, 'message' => 'Failed to send email. Please try again later.'];
+            return [
+                'success' => false, 
+                'message' => "We couldn't send the recovery email right now. Please try again."
+            ];
         }
     }
 

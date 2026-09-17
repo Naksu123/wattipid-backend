@@ -105,5 +105,39 @@ class InvitationRepository {
         $stmt = $this->conn->prepare("DELETE FROM invitations WHERE room_id = ?");
         return $stmt->execute([$roomId]);
     }
+
+    /**
+     * Check if a pending invitation was created recently to prevent duplicate sends (double taps).
+     */
+    public function getRecentPendingInvitation($email, $roomId, $seconds = 30) {
+        $stmt = $this->conn->prepare("SELECT id, created_at FROM invitations WHERE email = ? AND room_id = ? AND status = 'pending' AND created_at > DATE_SUB(NOW(), INTERVAL ? SECOND) ORDER BY id DESC LIMIT 1");
+        $stmt->execute([$email, $roomId, $seconds]);
+        return $stmt->fetch(PDO::FETCH_ASSOC);
+    }
+    /**
+     * Get the latest invitation for a given email regardless of status.
+     */
+    public function getLatestInvitationByEmail($email) {
+        $stmt = $this->conn->prepare("SELECT * FROM invitations WHERE email = ? ORDER BY id DESC LIMIT 1");
+        $stmt->execute([$email]);
+        return $stmt->fetch(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Get the latest invitation for a given room regardless of status.
+     */
+    public function getLatestInvitationByRoom($roomId) {
+        $stmt = $this->conn->prepare("SELECT * FROM invitations WHERE room_id = ? ORDER BY id DESC LIMIT 1");
+        $stmt->execute([$roomId]);
+        return $stmt->fetch(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Mark an invitation as expired.
+     */
+    public function markAsExpired($id) {
+        $stmt = $this->conn->prepare("UPDATE invitations SET status = 'expired' WHERE id = ?");
+        return $stmt->execute([$id]);
+    }
 }
 ?>

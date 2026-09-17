@@ -108,4 +108,45 @@ class AuthController {
         $result = $this->authService->logout($authenticatedUser['id']);
         ResponseHelper::sendRaw($result);
     }
+
+    public function testEmailDelivery($data) {
+        $email = $data['email'] ?? '';
+        if (empty($email) || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            ResponseHelper::error("Valid recipient email is required", 400);
+        }
+
+        $subject = "Wattipid Email Delivery Test - " . date('Y-m-d H:i:s');
+        $htmlBody = "
+            <div style='font-family: sans-serif; padding: 20px; max-width: 500px; margin: 0 auto; background: #ffffff; border: 1px solid #22c55e; border-radius: 8px;'>
+                <h2 style='color: #15803d;'>Wattipid Email Delivery Test</h2>
+                <p>This is a diagnostic verification email sent by the Wattipid system.</p>
+                <p><strong>Configured Provider:</strong> " . htmlspecialchars(EMAIL_PROVIDER) . "</p>
+                <p><strong>Timestamp:</strong> " . date('Y-m-d H:i:s') . "</p>
+                <p>If you received this message, transactional email delivery is operating correctly.</p>
+            </div>
+        ";
+        $textBody = "Wattipid Email Delivery Test\n\nProvider: " . EMAIL_PROVIDER . "\nTimestamp: " . date('Y-m-d H:i:s') . "\n\nDelivery successful.";
+
+        logEmailLifecycle('REQUEST_RECEIVED', $email, EMAIL_PROVIDER, ['type' => 'diagnostic_test']);
+        logEmailLifecycle('EMAIL_PREPARED', $email, EMAIL_PROVIDER, ['subject' => $subject]);
+
+        $result = sendEmail($email, 'Test Recipient', $subject, $htmlBody, $textBody, 'test');
+
+        if ($result['success']) {
+            ResponseHelper::sendRaw([
+                'success' => true,
+                'provider' => $result['provider'] ?? EMAIL_PROVIDER,
+                'message' => 'Email accepted by provider',
+                'messageId' => $result['messageId'] ?? null
+            ]);
+        } else {
+            ResponseHelper::sendRaw([
+                'success' => false,
+                'provider' => $result['provider'] ?? EMAIL_PROVIDER,
+                'message' => 'Email provider rejected the message',
+                'errorCode' => $result['errorCode'] ?? 400,
+                'error' => $result['message'] ?? 'Unknown rejection'
+            ], 400);
+        }
+    }
 }

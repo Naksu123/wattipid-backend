@@ -188,12 +188,8 @@ class NotificationEngine {
 
                     $alert['id'] = $notifId;
                     if ($settings['push_enabled']) {
-                        require_once __DIR__ . '/QueueService.php';
-                        $queue = new QueueService($this->conn);
-                        $queue->push('push_notification', [
-                            'userId' => $userId,
-                            'alert' => $alert
-                        ]);
+                        // Send push notification directly and immediately to Expo
+                        $this->sendPushNotification($userId, $alert);
                     }
                     
                     $sentAlerts[] = $alert;

@@ -97,7 +97,7 @@ try {
     $data = SecurityMiddleware::sanitizeInput($data);
 
     // Auth Middleware (Only enforce if not a public action)
-    $publicActions = ['login', 'register', 'verifyOTP', 'refreshToken', 'requestPasswordReset', 'verifyResetOTP', 'resetPassword', 'sendVerificationCode', 'resendVerificationCode', 'getTenantInvitationByEmail', 'verifyAccessCode', 'logConsumption', 'getLatestConsumption', 'getActiveTerms'];
+    $publicActions = ['login', 'register', 'verifyOTP', 'refreshToken', 'requestPasswordReset', 'verifyResetOTP', 'resetPassword', 'sendVerificationCode', 'resendVerificationCode', 'getTenantInvitationByEmail', 'verifyAccessCode', 'logConsumption', 'getLatestConsumption', 'getActiveTerms', 'testEmailDelivery'];
     
     $authenticatedUser = null;
     require_once __DIR__ . '/middlewares/AuthMiddleware.php';
@@ -107,12 +107,11 @@ try {
         $authenticatedUser = $auth->handle();
     }
 
-    // Lazy Evaluation: Calculate daily penalties if they haven't been calculated today.
-    // We only trigger this for authenticated landlord routes to avoid slowing down public/IoT APIs
-    if ($authenticatedUser && $authenticatedUser['role'] === 'landlord') {
+    // Automatic Daily Penalty Evaluation (Lazy Evaluation)
+    // Automatically runs once per day on the first request of each new day.
+    if ($authenticatedUser) {
         require_once __DIR__ . '/services/PenaltyService.php';
         $penaltySvc = new PenaltyService($conn);
-        // calculateDailyPenalties() has a built-in cache check so it only runs once per day
         $penaltySvc->calculateDailyPenalties();
     }
 

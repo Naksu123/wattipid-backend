@@ -192,7 +192,7 @@ class PaymentController {
         $status = $data['status'] ?? null; // pending, verified, rejected
         $limit = $data['limit'] ?? 50;
 
-        $query = "SELECT p.*, bc.due_date, bc.penalty_amount, bc.total_cost, u.name as tenant_name 
+        $query = "SELECT p.*, bc.due_date, bc.penalty_amount, bc.total_cost, bc.grand_total, bc.amount_paid, bc.miscellaneous_fee, u.name as tenant_name 
                   FROM payments p 
                   JOIN billing_cycles bc ON p.billing_cycle_id = bc.id 
                   LEFT JOIN users u ON p.tenant_id = u.id 
@@ -242,7 +242,7 @@ class PaymentController {
         $totalCollected = $stmt2->fetch(PDO::FETCH_ASSOC)['total_collected'] ?? 0;
 
         // 3. Overdue Amount (from billing_cycles)
-        $stmt3 = $this->db->query("SELECT SUM(total_cost + penalty_amount) as total_overdue, COUNT(*) as overdue_count FROM billing_cycles WHERE payment_status = 'overdue'");
+        $stmt3 = $this->db->query("SELECT SUM(GREATEST(0.00, grand_total - COALESCE(amount_paid, 0))) as total_overdue, COUNT(*) as overdue_count FROM billing_cycles WHERE payment_status = 'overdue'");
         $overdueData = $stmt3->fetch(PDO::FETCH_ASSOC);
 
         echo json_encode([
@@ -419,7 +419,197 @@ class PaymentController {
         $history = $stmt->fetchAll(PDO::FETCH_ASSOC);
         echo json_encode(["success" => true, "data" => $history]);
     }
-    public function getPaymentInsights($authenticatedUser, $data) {
+
+    public function getTenantBillingOverview($authenticatedUser, $data) {
+        if (!$authenticatedUser) {
+            echo json_encode(["success" => false, "message" => "Unauthorized"]);
+            return;
+        }
+
+        $roomId = $data['roomId'] ?? null;
+        if (!$roomId && $authenticatedUser['role'] === 'tenant') {
+            $roomId = $authenticatedUser['room_id'] ?? null;
+        }
+
+        if (!$roomId) {
+            echo json_encode(["success" => false, "message" => "Room ID required"]);
+            return;
+        }
+
+        if ($authenticatedUser['role'] === 'tenant' && $authenticatedUser['room_id'] !== $roomId) {
+            echo json_encode(["success" => false, "message" => "Forbidden: You can only view billing for your assigned room."]);
+            return;
+        }
+
+        try {
+            // 1. Check for Active Billing Cycle (Recording Consumption in Real Time)
+            $stmtActive = $this->db->prepare("SELECT * FROM billing_cycles WHERE room_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1");
+            $stmtActive->execute([$roomId]);
+            $activeRow = $stmtActive->fetch(PDO::FETCH_ASSOC);
+            $activeCycle = null;
+            if ($activeRow) {
+                $activeCycle = [
+                    'id' => (int)$activeRow['id'],
+                    'room_id' => $activeRow['room_id'],
+                    'cycle_start' => $activeRow['cycle_start'],
+                    'cycle_end' => $activeRow['cycle_end'],
+                    'status' => 'active',
+                    'is_recording' => true,
+                    'amount_due' => 0.00
+                ];
+            }
+
+            // 2. Fetch Completed Billing Cycles
+            $stmt = $this->db->prepare("SELECT * FROM billing_cycles WHERE room_id = ? AND status = 'completed' ORDER BY id DESC LIMIT 24");
+            $stmt->execute([$roomId]);
+            $completedCycles = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $currentBill = null;
+            $overdueBills = [];
+            $totalCurrentDue = 0.00;
+            $totalOverdueBase = 0.00;
+            $totalOverduePenalties = 0.00;
+            $totalOverdue = 0.00;
+
+            // Separate completed cycles into:
+            // - Overdue bills (due date passed and not settled)
+            // - Current generated bill (not overdue, unpaid)
+            $candidateCurrentCycle = null;
+
+            foreach ($completedCycles as $c) {
+                $cPaid = (float)($c['amount_paid'] ?? 0);
+                $cElec = (float)($c['electricity_charge'] ?? $c['total_cost'] ?? 0);
+                $cMisc = (float)($c['miscellaneous_fee'] ?? 0);
+                $cRent = (float)($c['monthly_rent'] ?? 0);
+                $cAdd = (float)($c['additional_charges'] ?? 0);
+                $cDisc = (float)($c['discounts'] ?? 0);
+                $cPen = (float)($c['penalty_amount'] ?? 0);
+                $baseAmount = round($cElec + $cMisc + $cRent + $cAdd - $cDisc, 2);
+
+                $isOverdue = ($c['payment_status'] === 'overdue');
+                $daysOverdue = 0;
+
+                if (!empty($c['due_date'])) {
+                    $dueTimestamp = strtotime($c['due_date']);
+                    if ($dueTimestamp < time()) {
+                        $daysOverdue = (int)floor((time() - $dueTimestamp) / 86400);
+                        if ($daysOverdue > 0 && $c['payment_status'] !== 'paid') {
+                            $isOverdue = true;
+                        }
+                    }
+                }
+
+                if ($isOverdue && $c['payment_status'] !== 'paid') {
+                    $remOverdue = max(0.00, round($baseAmount + $cPen - $cPaid, 2));
+                    if ($remOverdue > 0 || $c['payment_status'] === 'pending_verification') {
+                        $overdueBills[] = [
+                            'id' => (int)$c['id'],
+                            'invoice_number' => $c['invoice_number'],
+                            'cycle_start' => $c['cycle_start'],
+                            'cycle_end' => $c['cycle_end'],
+                            'due_date' => $c['due_date'],
+                            'payment_status' => $c['payment_status'],
+                            'days_overdue' => $daysOverdue,
+                            'base_amount' => $baseAmount,
+                            'penalty_amount' => $cPen,
+                            'amount_paid' => $cPaid,
+                            'total_overdue' => $remOverdue
+                        ];
+                        $totalOverdueBase += max(0.00, $baseAmount - $cPaid);
+                        $totalOverduePenalties += $cPen;
+                        $totalOverdue += $remOverdue;
+                    }
+                } else if (!$isOverdue && $candidateCurrentCycle === null && $c['payment_status'] !== 'paid') {
+                    $candidateCurrentCycle = $c;
+                }
+            }
+
+            // Determine Current Bill State (State 1: None, State 2: Active Cycle recording, State 3: Generated bill)
+            $currentBillState = 'none';
+
+            if ($candidateCurrentCycle !== null) {
+                $currentBillState = 'generated';
+                $elec = (float)($candidateCurrentCycle['electricity_charge'] ?? $candidateCurrentCycle['total_cost'] ?? 0);
+                $misc = (float)($candidateCurrentCycle['miscellaneous_fee'] ?? 0);
+                $rent = (float)($candidateCurrentCycle['monthly_rent'] ?? 0);
+                $add = (float)($candidateCurrentCycle['additional_charges'] ?? 0);
+                $disc = (float)($candidateCurrentCycle['discounts'] ?? 0);
+                $paid = (float)($candidateCurrentCycle['amount_paid'] ?? 0);
+                $pen = (float)($candidateCurrentCycle['penalty_amount'] ?? 0);
+
+                $currentCycleCost = round($elec + $misc + $rent + $add - $disc, 2);
+                $currentAmountDue = max(0.00, round($currentCycleCost + $pen - $paid, 2));
+
+                $currentBill = [
+                    'id' => (int)$candidateCurrentCycle['id'],
+                    'invoice_number' => $candidateCurrentCycle['invoice_number'],
+                    'cycle_start' => $candidateCurrentCycle['cycle_start'],
+                    'cycle_end' => $candidateCurrentCycle['cycle_end'],
+                    'due_date' => $candidateCurrentCycle['due_date'],
+                    'status' => $candidateCurrentCycle['status'],
+                    'payment_status' => $candidateCurrentCycle['payment_status'],
+                    'current_cycle_cost' => $currentCycleCost,
+                    'electricity_charge' => $elec,
+                    'miscellaneous_fee' => $misc,
+                    'monthly_rent' => $rent,
+                    'additional_charges' => $add,
+                    'discounts' => $disc,
+                    'penalty_amount' => $pen,
+                    'amount_paid' => $paid,
+                    'amount_due' => $currentAmountDue,
+                    'previous_reading' => (float)($candidateCurrentCycle['previous_reading'] ?? 0),
+                    'current_reading' => (float)($candidateCurrentCycle['current_reading'] ?? 0),
+                    'total_kwh' => (float)($candidateCurrentCycle['total_kwh'] ?? 0),
+                    'rate_per_kwh' => (float)($candidateCurrentCycle['rate_per_kwh'] ?? 12.50),
+                    'breakdown' => [
+                        'electricity' => $elec,
+                        'miscellaneous' => $misc,
+                        'rent' => $rent,
+                        'generation' => (float)($candidateCurrentCycle['generation_charge'] ?? 0),
+                        'transmission' => (float)($candidateCurrentCycle['transmission_charge'] ?? 0),
+                        'system_loss' => (float)($candidateCurrentCycle['system_loss_charge'] ?? 0),
+                        'distribution' => (float)($candidateCurrentCycle['distribution_charge'] ?? 0),
+                        'metering' => (float)($candidateCurrentCycle['metering_charge'] ?? 0),
+                        'supply' => (float)($candidateCurrentCycle['supply_charge'] ?? 0),
+                        'vat' => (float)($candidateCurrentCycle['vat_amount'] ?? 0),
+                        'additional' => $add,
+                        'discounts' => $disc
+                    ]
+                ];
+                $totalCurrentDue = $currentAmountDue;
+            } else if ($activeCycle !== null) {
+                // State 2: Current cycle active, recording meter consumption, bill not generated yet
+                $currentBillState = 'cycle_active';
+                $totalCurrentDue = 0.00;
+            }
+
+            // 3. Reconciled Total Outstanding Summary
+            $totalOutstanding = [
+                'current_bill_due' => round($totalCurrentDue, 2),
+                'previous_balance' => round($totalOverdueBase, 2),
+                'overdue_penalties' => round($totalOverduePenalties, 2),
+                'total_overdue' => round($totalOverdue, 2),
+                'grand_total' => round($totalCurrentDue + $totalOverdue, 2)
+            ];
+
+            echo json_encode([
+                "success" => true,
+                "data" => [
+                    "has_current_bill" => ($currentBill !== null),
+                    "current_bill_state" => $currentBillState, // 'generated' | 'cycle_active' | 'none'
+                    "active_cycle" => $activeCycle,
+                    "current_bill" => $currentBill,
+                    "has_overdue" => !empty($overdueBills),
+                    "overdue_bills" => $overdueBills,
+                    "total_outstanding" => $totalOutstanding
+                ]
+            ]);
+        } catch (Exception $e) {
+            echo json_encode(["success" => false, "message" => "Error loading billing overview: " . $e->getMessage()]);
+        }
+    }
+
+        public function getPaymentInsights($authenticatedUser, $data) {
         if (!$authenticatedUser) {
             echo json_encode(["success" => false, "message" => "Unauthorized"]);
             return;

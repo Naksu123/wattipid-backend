@@ -33,15 +33,20 @@ class ResponseHelper {
 
     public static function sendRaw($result, $code = 200) {
         if (ob_get_length()) ob_clean();
+        // Ensure success => false results in HTTP 400 error status so client interceptors catch it
+        if (is_array($result) && isset($result['success']) && $result['success'] === false && $code === 200) {
+            $code = 400;
+        }
         http_response_code($code);
         
         $sanitizedResult = SecurityHelper::sanitize($result);
 
-        // Ensure the standard structure: success, message, data
+        // Ensure the standard structure: success, message, error_code, data
         $final = [
-            'success' => $sanitizedResult['success'] ?? true,
-            'message' => $sanitizedResult['message'] ?? 'Operation successful',
-            'data'    => $sanitizedResult['data'] ?? (isset($sanitizedResult['success']) ? null : $sanitizedResult)
+            'success'    => $sanitizedResult['success'] ?? true,
+            'message'    => $sanitizedResult['message'] ?? 'Operation successful',
+            'error_code' => $sanitizedResult['error_code'] ?? null,
+            'data'       => $sanitizedResult['data'] ?? (isset($sanitizedResult['success']) ? null : $sanitizedResult)
         ];
 
         echo json_encode($final);
