@@ -313,7 +313,7 @@ class DashboardService
             $currStart = date('Y-m-d 00:00:00');
             $currEnd = date('Y-m-d H:i:s');
             $prevStart = date('Y-m-d 00:00:00', strtotime('-1 day'));
-            $prevEnd = date('Y-m-d 23:59:59', strtotime('-1 day'));
+            $prevEnd = date('Y-m-d 00:00:00');
 
             $currData = $this->dashboardRepo->getTotalConsumption($col, $val, $currStart, $currEnd);
             $prevData = $this->dashboardRepo->getTotalConsumption($col, $val, $prevStart, $prevEnd);
@@ -348,10 +348,29 @@ class DashboardService
             $prevData = $prevResult['data'];
         }
 
+        $prevEnergy = (float)($prevData['totalEnergy'] ?? 0);
+        $currEnergy = (float)($currData['totalEnergy'] ?? 0);
+        $prevCost = (float)($prevData['totalCost'] ?? 0);
+        $currCost = (float)($currData['totalCost'] ?? 0);
+
+        $energyPctChange = 0;
+        if ($prevEnergy > 0) {
+            $energyPctChange = (($currEnergy - $prevEnergy) / $prevEnergy) * 100;
+        } elseif ($currEnergy > 0) {
+            $energyPctChange = 100;
+        }
+
+        $costPctChange = 0;
+        if ($prevCost > 0) {
+            $costPctChange = (($currCost - $prevCost) / $prevCost) * 100;
+        } elseif ($currCost > 0) {
+            $costPctChange = 100;
+        }
+
         // Calculate anomalies and budget check
         $isAbnormal = false;
-        if ($prevData['totalEnergy'] > 0) {
-            $pctChange = (($currData['totalEnergy'] - $prevData['totalEnergy']) / $prevData['totalEnergy']) * 100;
+        if ($prevEnergy > 0) {
+            $pctChange = (($currEnergy - $prevEnergy) / $prevEnergy) * 100;
             if (abs($pctChange) >= 30)
                 $isAbnormal = true;
         }
@@ -362,8 +381,8 @@ class DashboardService
                 'current' => $currData,
                 'previous' => $prevData,
                 'isAbnormal' => $isAbnormal,
-                'energyPctChange' => ($prevData['totalEnergy'] > 0) ? (($currData['totalEnergy'] - $prevData['totalEnergy']) / $prevData['totalEnergy']) * 100 : 0,
-                'costPctChange' => ($prevData['totalCost'] > 0) ? (($currData['totalCost'] - $prevData['totalCost']) / $prevData['totalCost']) * 100 : 0
+                'energyPctChange' => $energyPctChange,
+                'costPctChange' => $costPctChange
             ]
         ];
     }
