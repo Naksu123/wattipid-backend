@@ -43,7 +43,7 @@ class AuthMiddleware {
 
         // --- SECURITY: TOKEN VERSION CHECK ---
         // This allows for immediate global logout by bumping the user's token_version in DB.
-        $stmt = $this->conn->prepare("SELECT token_version, room_id FROM users WHERE id = ?");
+        $stmt = $this->conn->prepare("SELECT token_version, room_id, name FROM users WHERE id = ?");
         $stmt->execute([$payload['id']]);
         $userRow = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -51,8 +51,9 @@ class AuthMiddleware {
             ResponseHelper::error("Unauthorized: Session revoked. Please log in again.", 401);
         }
 
-        // Inject the most up-to-date room ID so controllers can perform strict access checks
-        $payload['room_id'] = $userRow['room_id'];
+        // Inject the most up-to-date room ID and name so controllers can perform strict access checks and auditing
+        $payload['room_id'] = $userRow['room_id'] ?? null;
+        $payload['name'] = $userRow['name'] ?? null;
 
         return $payload;
     }

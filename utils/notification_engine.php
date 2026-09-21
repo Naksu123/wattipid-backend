@@ -35,7 +35,7 @@ class NotificationEngine {
         // before generating ANY alerts.
         // ====================================================
         if (!$this->isDeviceActive($roomId)) {
-            return []; // No real IoT data — suppress all alerts
+            return []; // No real IoT data â€” suppress all alerts
         }
 
         // GHOST FIX: Validate currentPower is realistic
@@ -60,8 +60,8 @@ class NotificationEngine {
                     'type' => 'budget_daily_exceeded',
                     'category' => 'budget',
                     'severity' => 'critical',
-                    'title' => '⚠️ Daily Budget Exceeded!',
-                    'message' => "Your electricity usage exceeded your ₱" . number_format($budget['daily_allowance'], 2) . " daily budget. Current spending: ₱" . number_format($todayData['totalCost'], 2) . ".",
+                    'title' => 'âš ï¸ Daily Budget Exceeded!',
+                    'message' => "Your electricity usage exceeded your â‚±" . number_format($budget['daily_allowance'], 2) . " daily budget. Current spending: â‚±" . number_format($todayData['totalCost'], 2) . ".",
                     'data' => ['dailyPct' => round($dailyPct, 1), 'spent' => $todayData['totalCost'], 'limit' => $budget['daily_allowance']],
                 ];
             } elseif ($dailyPct >= 80) {
@@ -69,8 +69,8 @@ class NotificationEngine {
                     'type' => 'budget_daily_warning',
                     'category' => 'budget',
                     'severity' => 'warning',
-                    'title' => '💰 Daily Budget Warning',
-                    'message' => "You've used " . round($dailyPct) . "% of your daily budget (₱" . number_format($todayData['totalCost'], 2) . " / ₱" . number_format($budget['daily_allowance'], 2) . ").",
+                    'title' => 'ðŸ’° Daily Budget Warning',
+                    'message' => "You've used " . round($dailyPct) . "% of your daily budget (â‚±" . number_format($todayData['totalCost'], 2) . " / â‚±" . number_format($budget['daily_allowance'], 2) . ").",
                     'data' => ['dailyPct' => round($dailyPct, 1)],
                 ];
             }
@@ -84,15 +84,15 @@ class NotificationEngine {
                     'type' => 'budget_monthly_exceeded',
                     'category' => 'budget',
                     'severity' => 'critical',
-                    'title' => '🚨 Monthly Budget Exceeded!',
-                    'message' => "Your monthly spending of ₱" . number_format($monthData['totalCost'], 2) . " has exceeded your budget of ₱" . number_format($budget['monthly_budget'], 2) . ".",
+                    'title' => 'ðŸš¨ Monthly Budget Exceeded!',
+                    'message' => "Your monthly spending of â‚±" . number_format($monthData['totalCost'], 2) . " has exceeded your budget of â‚±" . number_format($budget['monthly_budget'], 2) . ".",
                     'data' => ['monthlyPct' => round($monthlyPct, 1)],
                 ];
             }
         }
 
         // ---- CHECK 3: Abnormal Consumption ----
-        // GHOST FIX: Require minimum meaningful average (₱1 daily average) to prevent
+        // GHOST FIX: Require minimum meaningful average (â‚±1 daily average) to prevent
         // false abnormal alerts from tiny/zero baseline values
         $abnormalThreshold = $settings['abnormal_threshold_pct'];
         if ($avg7Day['avgDailyCost'] > 1.0 && $todayData['totalCost'] > 1.0) {
@@ -102,7 +102,7 @@ class NotificationEngine {
                     'type' => 'abnormal_consumption',
                     'category' => 'consumption',
                     'severity' => 'warning',
-                    'title' => '📊 Abnormal Electricity Usage',
+                    'title' => 'ðŸ“Š Abnormal Electricity Usage',
                     'message' => "Today's usage is " . round($abovePct) . "% higher than your 7-day average. Possible appliance left running.",
                     'data' => ['abovePct' => round($abovePct, 1), 'todayCost' => $todayData['totalCost'], 'avgCost' => $avg7Day['avgDailyCost']],
                 ];
@@ -116,7 +116,7 @@ class NotificationEngine {
                 'type' => 'power_spike',
                 'category' => 'consumption',
                 'severity' => 'warning',
-                'title' => '⚡ High Power Spike Detected!',
+                'title' => 'âš¡ High Power Spike Detected!',
                 'message' => "Current power draw is " . round($currentPower) . "W, exceeding your " . $spikeThreshold . "W threshold. Check for multiple heavy appliances running simultaneously.",
                 'data' => ['currentPower' => round($currentPower), 'threshold' => $spikeThreshold],
             ];
@@ -130,8 +130,8 @@ class NotificationEngine {
                 'type' => 'continuous_high_usage',
                 'category' => 'consumption',
                 'severity' => 'warning',
-                'title' => '🔌 Prolonged High Consumption',
-                'message' => "An appliance may still be running — high consumption detected for over " . ($highUsageMinutes / 60) . " hours.",
+                'title' => 'ðŸ”Œ Prolonged High Consumption',
+                'message' => "An appliance may still be running â€” high consumption detected for over " . ($highUsageMinutes / 60) . " hours.",
                 'data' => ['duration_minutes' => $highUsageMinutes],
             ];
         }
@@ -150,8 +150,8 @@ class NotificationEngine {
                         'type' => 'forecast_exceeded',
                         'category' => 'forecast',
                         'severity' => $projectedPct >= 120 ? 'critical' : 'warning',
-                        'title' => '📈 Monthly Bill Forecast Alert',
-                        'message' => "At current rate, your projected monthly bill is ₱" . number_format($forecastData['projected_monthly_cost'], 2) . " — " . round($projectedPct) . "% of your ₱" . number_format($budget['monthly_budget'], 2) . " budget.",
+                        'title' => 'ðŸ“ˆ Monthly Bill Forecast Alert',
+                        'message' => "At current rate, your projected monthly bill is â‚±" . number_format($forecastData['projected_monthly_cost'], 2) . " â€” " . round($projectedPct) . "% of your â‚±" . number_format($budget['monthly_budget'], 2) . " budget.",
                         'data' => $forecastData,
                     ];
                 }
@@ -168,7 +168,7 @@ class NotificationEngine {
                 'type' => 'meter_anomaly',
                 'category' => 'system',
                 'severity' => 'critical',
-                'title' => '🔧 Meter Reading Anomaly',
+                'title' => 'ðŸ”§ Meter Reading Anomaly',
                 'message' => "Possible submeter reading inconsistency detected: " . $anomaly['description'],
                 'data' => $anomaly,
             ];
@@ -217,12 +217,12 @@ class NotificationEngine {
                 'title' => $alert['title'],
                 'body' => $alert['message'],
                 'sound' => 'default',
-                'priority' => $alert['severity'] === 'critical' ? 'high' : 'default',
+                'priority' => ($alert['severity'] ?? 'info') === 'critical' ? 'high' : 'default',
                 'channelId' => 'default',
                 'data' => [
-                    'type' => $alert['type'],
-                    'category' => $alert['category'],
-                    'severity' => $alert['severity'],
+                    'type' => $alert['type'] ?? 'alert',
+                    'category' => $alert['category'] ?? 'general',
+                    'severity' => $alert['severity'] ?? 'info',
                     'notificationId' => $alert['id'] ?? null,
                     'screen' => 'notifications',
                 ],
@@ -328,7 +328,7 @@ class NotificationEngine {
     }
 
     /**
-     * GHOST FIX: Fixed SQL INTERVAL binding — MariaDB emulated prepares
+     * GHOST FIX: Fixed SQL INTERVAL binding â€” MariaDB emulated prepares
      * treat '?' as string literal in INTERVAL clause. Inline the integer.
      */
     private function checkContinuousHighUsage($roomId, $wattThreshold, $minutes) {
@@ -601,3 +601,4 @@ class NotificationEngine {
         $stmt->execute([$notificationId, $userId]);
     }
 }
+

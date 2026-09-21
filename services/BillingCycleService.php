@@ -69,7 +69,7 @@ class BillingCycleService {
             
             // Check previous balance if unpaid
             $previousBalance = 0.00;
-            if ($prevCycle && in_array($prevCycle['payment_status'], ['unpaid', 'overdue', 'rejected', 'partially_paid'])) {
+            if ($prevCycle && in_array($prevCycle['payment_status'], ['unpaid', 'overdue', 'rejected', 'partially_paid', 'pending_verification'])) {
                 $previousBalance = max(0.00, (float)$prevCycle['grand_total'] - (float)($prevCycle['amount_paid'] ?? 0));
             }
 

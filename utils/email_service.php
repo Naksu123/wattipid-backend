@@ -21,14 +21,19 @@ require_once __DIR__ . '/QueueService.php';
  * Stages: REQUEST_RECEIVED, EMAIL_PREPARED, EMAIL_PROVIDER_REQUEST,
  *         EMAIL_PROVIDER_ACCEPTED, EMAIL_PROVIDER_REJECTED, EMAIL_FAILED
  */
-function logEmailLifecycle($stage, $toEmail, $provider, $details = []) {
+function logEmailLifecycle($stage, $toEmail, $provider, $details = [])
+{
     $timestamp = date('Y-m-d H:i:s');
-    
+
     // Mask sensitive details
-    if (isset($details['otp'])) unset($details['otp']);
-    if (isset($details['password'])) unset($details['password']);
-    if (isset($details['token'])) unset($details['token']);
-    if (isset($details['access_code'])) unset($details['access_code']);
+    if (isset($details['otp']))
+        unset($details['otp']);
+    if (isset($details['password']))
+        unset($details['password']);
+    if (isset($details['token']))
+        unset($details['token']);
+    if (isset($details['access_code']))
+        unset($details['access_code']);
 
     $detailsJson = !empty($details) ? ' | ' . json_encode($details, JSON_UNESCAPED_SLASHES) : '';
     $prefix = (strpos($stage, 'REJECTED') !== false || strpos($stage, 'FAILED') !== false) ? '[EMAIL ERROR]' : '[EMAIL]';
@@ -39,7 +44,8 @@ function logEmailLifecycle($stage, $toEmail, $provider, $details = []) {
 
 // ============ QUEUE HELPER (BACKGROUND JOBS) ============
 
-function queueEmail($conn, $toEmail, $toName, $subject, $htmlBody, $textBody = '') {
+function queueEmail($conn, $toEmail, $toName, $subject, $htmlBody, $textBody = '')
+{
     $queue = new QueueService($conn);
     return $queue->push('email', [
         'to' => $toEmail,
@@ -63,7 +69,8 @@ function queueEmail($conn, $toEmail, $toName, $subject, $htmlBody, $textBody = '
  * @param string $type       Category (e.g. 'password_reset', 'invitation', 'verification', 'general')
  * @return array             ['success' => bool, 'message' => string, 'provider' => string, 'messageId' => ?string]
  */
-function sendEmail($toEmail, $toName, $subject, $htmlBody, $textBody = '', $type = 'general') {
+function sendEmail($toEmail, $toName, $subject, $htmlBody, $textBody = '', $type = 'general')
+{
     $provider = strtolower(EMAIL_PROVIDER);
 
     logEmailLifecycle('EMAIL_PROVIDER_REQUEST', $toEmail, $provider, ['type' => $type, 'subject' => $subject]);
@@ -90,9 +97,10 @@ function sendEmail($toEmail, $toName, $subject, $htmlBody, $textBody = '', $type
  * RFC 5321/5322 Compliant Socket-based SMTP Client.
  * Supports TLS / STARTTLS encryption (Gmail, Brevo SMTP, custom domains).
  */
-function sendViaSmtp($toEmail, $toName, $subject, $htmlBody, $textBody = '') {
+function sendViaSmtp($toEmail, $toName, $subject, $htmlBody, $textBody = '')
+{
     $host = defined('SMTP_HOST') ? SMTP_HOST : '';
-    $port = defined('SMTP_PORT') ? (int)SMTP_PORT : 587;
+    $port = defined('SMTP_PORT') ? (int) SMTP_PORT : 587;
     $user = defined('SMTP_USER') ? SMTP_USER : '';
     $pass = defined('SMTP_PASS') ? SMTP_PASS : '';
     $encryption = defined('SMTP_ENCRYPTION') ? strtolower(SMTP_ENCRYPTION) : 'tls';
@@ -115,11 +123,12 @@ function sendViaSmtp($toEmail, $toName, $subject, $htmlBody, $textBody = '') {
 
     stream_set_timeout($socket, $timeout);
 
-    $readResp = function() use ($socket) {
+    $readResp = function () use ($socket) {
         $data = '';
         while ($line = fgets($socket, 512)) {
             $data .= $line;
-            if (isset($line[3]) && $line[3] === ' ') break;
+            if (isset($line[3]) && $line[3] === ' ')
+                break;
         }
         return $data;
     };
@@ -271,7 +280,8 @@ function sendViaSmtp($toEmail, $toName, $subject, $htmlBody, $textBody = '') {
 
 // ============ BREVO (SENDINBLUE) PROVIDER ============
 
-function sendViaBrevo($toEmail, $toName, $subject, $htmlBody, $textBody, $type = 'general') {
+function sendViaBrevo($toEmail, $toName, $subject, $htmlBody, $textBody, $type = 'general')
+{
     $apiKeyLoaded = !empty(BREVO_API_KEY);
     $senderEmailLoaded = !empty(SENDER_EMAIL);
 
@@ -332,7 +342,6 @@ function sendViaBrevo($toEmail, $toName, $subject, $htmlBody, $textBody, $type =
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $curlError = curl_error($ch);
     $curlInfo = curl_getinfo($ch);
-    curl_close($ch);
 
     error_log("[Email] Brevo response status: $httpCode");
 
@@ -360,7 +369,8 @@ function sendViaBrevo($toEmail, $toName, $subject, $htmlBody, $textBody, $type =
 
 // ============ SENDGRID PROVIDER ============
 
-function sendViaSendGrid($toEmail, $toName, $subject, $htmlBody, $textBody) {
+function sendViaSendGrid($toEmail, $toName, $subject, $htmlBody, $textBody)
+{
     if (empty(SENDGRID_API_KEY)) {
         $err = 'SendGrid API key is not configured';
         logEmailLifecycle('EMAIL_PROVIDER_REJECTED', $toEmail, 'sendgrid', ['error' => $err]);
@@ -424,7 +434,8 @@ function sendViaSendGrid($toEmail, $toName, $subject, $htmlBody, $textBody) {
 
 // ============ MOCK PROVIDER (Development) ============
 
-function sendViaMock($toEmail, $subject, $htmlBody) {
+function sendViaMock($toEmail, $subject, $htmlBody)
+{
     $mockId = '<mock_' . uniqid() . '@wattipid.local>';
     logEmailLifecycle('EMAIL_PROVIDER_ACCEPTED', $toEmail, 'mock', ['messageId' => $mockId]);
 
@@ -438,27 +449,31 @@ function sendViaMock($toEmail, $subject, $htmlBody) {
 
 // ============ OTP GENERATION & VALIDATION ============
 
-function generateOTP() {
+function generateOTP()
+{
     $min = pow(10, OTP_LENGTH - 1);
     $max = pow(10, OTP_LENGTH) - 1;
     return (string) random_int($min, $max);
 }
 
-function hashOTP($otp) {
+function hashOTP($otp)
+{
     return hash('sha256', $otp);
 }
 
-function storeOTP($conn, $email, $otp, $type = 'verification') {
+function storeOTP($conn, $email, $otp, $type = 'verification')
+{
     $stmt = $conn->prepare("UPDATE email_otps SET status = 'invalidated' WHERE email = ? AND type = ? AND status = 'pending'");
     $stmt->execute([$email, $type]);
 
     $hashedOtp = hashOTP($otp);
-    $expiryMinutes = (int)OTP_EXPIRY_MINUTES;
+    $expiryMinutes = (int) OTP_EXPIRY_MINUTES;
     $stmt = $conn->prepare("INSERT INTO email_otps (email, otp_hash, type, expires_at) VALUES (?, ?, ?, DATE_ADD(NOW(), INTERVAL $expiryMinutes MINUTE))");
     return $stmt->execute([$email, $hashedOtp, $type]);
 }
 
-function validateOTP($conn, $email, $otp, $type = 'verification') {
+function validateOTP($conn, $email, $otp, $type = 'verification')
+{
     $stmt = $conn->prepare("SELECT * FROM email_otps WHERE email = ? AND type = ? ORDER BY created_at DESC LIMIT 1");
     $stmt->execute([$email, $type]);
     $record = $stmt->fetch();
@@ -466,11 +481,14 @@ function validateOTP($conn, $email, $otp, $type = 'verification') {
     if (!$record) {
         return ['success' => false, 'message' => 'No verification code found.', 'status' => 'not_found'];
     }
-    
+
     if ($record['status'] !== 'pending') {
-        if ($record['status'] === 'expired') return ['success' => false, 'message' => 'Verification code has expired.', 'status' => 'expired'];
-        if ($record['status'] === 'locked') return ['success' => false, 'message' => 'Too many failed attempts.', 'status' => 'locked'];
-        if ($record['status'] === 'used') return ['success' => false, 'message' => 'This code has already been used.', 'status' => 'used'];
+        if ($record['status'] === 'expired')
+            return ['success' => false, 'message' => 'Verification code has expired.', 'status' => 'expired'];
+        if ($record['status'] === 'locked')
+            return ['success' => false, 'message' => 'Too many failed attempts.', 'status' => 'locked'];
+        if ($record['status'] === 'used')
+            return ['success' => false, 'message' => 'This code has already been used.', 'status' => 'used'];
         return ['success' => false, 'message' => 'Verification code is invalid.', 'status' => 'invalidated'];
     }
 
@@ -499,7 +517,8 @@ function validateOTP($conn, $email, $otp, $type = 'verification') {
     return ['success' => true, 'message' => 'Verification successful!', 'status' => 'valid'];
 }
 
-function checkOTPRateLimit($conn, $email) {
+function checkOTPRateLimit($conn, $email)
+{
     $stmt = $conn->prepare("SELECT COUNT(*) as cnt FROM email_otps WHERE email = ? AND created_at > DATE_SUB(NOW(), INTERVAL 1 HOUR)");
     $stmt->execute([$email]);
     $hourCount = $stmt->fetch()['cnt'];
@@ -525,7 +544,8 @@ function checkOTPRateLimit($conn, $email) {
 
 // ============ EMAIL TEMPLATES ============
 
-function getOTPEmailTemplate($recipientName, $otpCode, $type = 'verification') {
+function getOTPEmailTemplate($recipientName, $otpCode, $type = 'verification')
+{
     if ($type === 'access_code') {
         $title = 'Wattipid Room Access Code';
         $subtitle = 'Welcome to Wattipid Smart Electricity Monitoring System.<br>Your room has been successfully registered.<br>Use the access code below to complete your account registration.';
@@ -567,14 +587,16 @@ function getOTPEmailTemplate($recipientName, $otpCode, $type = 'verification') {
 HTML;
 }
 
-function getOTPEmailPlainText($recipientName, $otpCode, $type = 'verification') {
+function getOTPEmailPlainText($recipientName, $otpCode, $type = 'verification')
+{
     if ($type === 'access_code') {
         return "Wattipid Room Access Code\n\nWelcome to Wattipid Smart Electricity Monitoring System.\nYour room has been successfully registered.\nUse the access code below to complete your account registration.\n\nAccess Code: {$otpCode}\n\nImportant: Keep this code private. Do not share it with anyone.";
     }
     return "Wattipid Email Verification\n\nYour code is: {$otpCode}\n\nExpires in " . OTP_EXPIRY_MINUTES . " minutes.";
 }
 
-function getInvitationEmailTemplate($tenantName, $roomNumber, $accessCode, $expiresAt) {
+function getInvitationEmailTemplate($tenantName, $roomNumber, $accessCode, $expiresAt)
+{
     $dateFmt = date('F j, Y g:i A', strtotime($expiresAt));
     return <<<HTML
 <!DOCTYPE html>
@@ -630,7 +652,8 @@ function getInvitationEmailTemplate($tenantName, $roomNumber, $accessCode, $expi
 HTML;
 }
 
-function getInvitationEmailPlainText($tenantName, $roomNumber, $accessCode, $expiresAt) {
+function getInvitationEmailPlainText($tenantName, $roomNumber, $accessCode, $expiresAt)
+{
     $dateFmt = date('F j, Y g:i A', strtotime($expiresAt));
     return "Wattipid Registration Invitation\n\nDear {$tenantName},\n\nYou have been invited to register for the Wattipid Smart Electricity Monitoring System.\n\nRoom Number: {$roomNumber}\nAccess Code: {$accessCode}\nValid until: {$dateFmt}\n\nTo register:\n1. Open the Wattipid mobile application.\n2. Select Register as Tenant.\n3. Enter your email and Access Code: {$accessCode}\n4. Set your account password.\n\nIf you did not expect this invitation, please ignore this email.\n\nRegards,\nWattipid Administration";
 }
@@ -640,7 +663,8 @@ function getInvitationEmailPlainText($tenantName, $roomNumber, $accessCode, $exp
 /**
  * Send Password Reset OTP email directly and synchronously.
  */
-function sendPasswordResetEmail($conn, $email, $otp, $tenantName = '') {
+function sendPasswordResetEmail($conn, $email, $otp, $tenantName = '')
+{
     logEmailLifecycle('REQUEST_RECEIVED', $email, EMAIL_PROVIDER, ['type' => 'password_reset']);
 
     $subject = "Password Reset Code - Wattipid";
@@ -689,7 +713,8 @@ HTML;
 /**
  * Send Tenant Invitation email directly and synchronously.
  */
-function sendInvitationEmailDirect($conn, $email, $tenantName, $roomNumber, $accessCode, $expiresAt) {
+function sendInvitationEmailDirect($conn, $email, $tenantName, $roomNumber, $accessCode, $expiresAt)
+{
     logEmailLifecycle('REQUEST_RECEIVED', $email, EMAIL_PROVIDER, ['type' => 'invitation', 'room' => $roomNumber]);
 
     $subject = 'Your Wattipid Registration Invitation';
@@ -705,14 +730,16 @@ function sendInvitationEmailDirect($conn, $email, $tenantName, $roomNumber, $acc
     return $result;
 }
 
-function queueInvitationEmail($conn, $email, $tenantName, $roomNumber, $accessCode, $expiresAt) {
+function queueInvitationEmail($conn, $email, $tenantName, $roomNumber, $accessCode, $expiresAt)
+{
     $subject = 'Your Wattipid Registration Invitation';
     $htmlBody = getInvitationEmailTemplate($tenantName, $roomNumber, $accessCode, $expiresAt);
     $textBody = getInvitationEmailPlainText($tenantName, $roomNumber, $accessCode, $expiresAt);
     return queueEmail($conn, $email, $tenantName, $subject, $htmlBody, $textBody);
 }
 
-function sendVerificationOTP($conn, $email, $tenantName = '') {
+function sendVerificationOTP($conn, $email, $tenantName = '')
+{
     $rateCheck = checkOTPRateLimit($conn, $email);
     if (!$rateCheck['allowed']) {
         return ['success' => false, 'message' => $rateCheck['message'], 'wait_seconds' => $rateCheck['wait_seconds']];
@@ -720,7 +747,7 @@ function sendVerificationOTP($conn, $email, $tenantName = '') {
 
     $otp = generateOTP();
     storeOTP($conn, $email, $otp, 'verification');
-    
+
     $subject = 'Your Wattipid Verification Code: ' . $otp;
     $htmlBody = getOTPEmailTemplate($tenantName ?: $email, $otp, 'verification');
     $textBody = getOTPEmailPlainText($tenantName ?: $email, $otp, 'verification');
@@ -732,7 +759,8 @@ function sendVerificationOTP($conn, $email, $tenantName = '') {
     return ['success' => $result['success'], 'message' => $result['success'] ? 'Verification email sent.' : $result['message'], 'messageId' => $result['messageId'] ?? null];
 }
 
-function sendAccessCodeEmail($conn, $email, $accessCode, $roomId) {
+function sendAccessCodeEmail($conn, $email, $accessCode, $roomId)
+{
     $subject = 'Your Wattipid Room Access Code';
     $htmlBody = getOTPEmailTemplate($email, $accessCode, 'access_code');
     $textBody = getOTPEmailPlainText($email, $accessCode, 'access_code');
@@ -744,11 +772,13 @@ function sendAccessCodeEmail($conn, $email, $accessCode, $roomId) {
     return ['success' => $result['success'], 'message' => $result['success'] ? 'Access code email sent.' : $result['message'], 'messageId' => $result['messageId'] ?? null];
 }
 
-function logEmailDelivery($conn, $email, $type, $status, $provider, $errorMessage = null) {
+function logEmailDelivery($conn, $email, $type, $status, $provider, $errorMessage = null)
+{
     try {
         if ($conn) {
             $stmt = $conn->prepare("INSERT INTO email_logs (email, type, status, provider, error_message) VALUES (?, ?, ?, ?, ?)");
             $stmt->execute([$email, $type, $status, $provider, $errorMessage]);
         }
-    } catch (Exception $e) {}
+    } catch (Exception $e) {
+    }
 }

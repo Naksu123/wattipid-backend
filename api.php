@@ -97,7 +97,7 @@ try {
     $data = SecurityMiddleware::sanitizeInput($data);
 
     // Auth Middleware (Only enforce if not a public action)
-    $publicActions = ['login', 'register', 'verifyOTP', 'refreshToken', 'requestPasswordReset', 'verifyResetOTP', 'resetPassword', 'sendVerificationCode', 'resendVerificationCode', 'getTenantInvitationByEmail', 'verifyAccessCode', 'logConsumption', 'getLatestConsumption', 'getActiveTerms', 'testEmailDelivery'];
+    $publicActions = ['login', 'register', 'verifyOTP', 'refreshToken', 'requestPasswordReset', 'verifyResetOTP', 'resetPassword', 'sendVerificationCode', 'resendVerificationCode', 'getTenantInvitationByEmail', 'verifyAccessCode', 'logConsumption', 'getLatestConsumption', 'getActiveTerms'];
     
     $authenticatedUser = null;
     require_once __DIR__ . '/middlewares/AuthMiddleware.php';
@@ -107,11 +107,12 @@ try {
         $authenticatedUser = $auth->handle();
     }
 
-    // Automatic Daily Penalty Evaluation (Lazy Evaluation)
-    // Automatically runs once per day on the first request of each new day.
-    if ($authenticatedUser) {
+    // Lazy Evaluation: Calculate daily penalties if they haven't been calculated today.
+    // We only trigger this for authenticated landlord routes to avoid slowing down public/IoT APIs
+    if ($authenticatedUser && $authenticatedUser['role'] === 'landlord') {
         require_once __DIR__ . '/services/PenaltyService.php';
         $penaltySvc = new PenaltyService($conn);
+        // calculateDailyPenalties() has a built-in cache check so it only runs once per day
         $penaltySvc->calculateDailyPenalties();
     }
 
@@ -129,8 +130,13 @@ try {
         ResponseHelper::error("Action '$action' not found.", 404);
     }
 
-    // If we reached here, flush the buffer
-    ob_end_flush();
+    // Cleanly capture output buffer, strip any accidental BOM or whitespace, and output clean response
+    $output = ob_get_clean();
+    if ($output !== false) {
+        $output = preg_replace('/^\xEF\xBB\xBF/', '', $output);
+        $output = ltrim($output);
+        echo $output;
+    }
 
 } catch (Throwable $t) {
     sendJsonError($t->getMessage(), 500, $t->getTraceAsString());

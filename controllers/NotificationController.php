@@ -42,10 +42,8 @@ class NotificationController {
                 $stmt->execute($params);
                 $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 
-                if (!empty($results)) {
-                    ResponseHelper::sendRaw(['success' => true, 'data' => $results]);
-                    return;
-                }
+                ResponseHelper::sendRaw(['success' => true, 'data' => $results]);
+                return;
             }
             
             // Fallback to legacy notifications table
@@ -256,10 +254,10 @@ class NotificationController {
      */
     private function tableExists($tableName) {
         try {
-            $stmt = $this->conn->prepare("SHOW TABLES LIKE ?");
+            $stmt = $this->conn->prepare("SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ? LIMIT 1");
             $stmt->execute([$tableName]);
-            return $stmt->rowCount() > 0;
-        } catch (Exception $e) {
+            return !empty($stmt->fetchColumn());
+        } catch (Throwable $e) {
             return false;
         }
     }

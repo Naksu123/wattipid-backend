@@ -49,16 +49,63 @@ class SyncController {
             $newNotifsList = $stmtNotif->fetchAll(PDO::FETCH_ASSOC);
             $newNotifsCount = count($newNotifsList);
 
+            // Authoritative total unread count for this user
+            $stmtUnread = $this->db->prepare("SELECT COUNT(*) FROM notification_history WHERE user_id = ? AND is_read = 0");
+            $stmtUnread->execute([$userId]);
+            $unreadNotificationsCount = (int) $stmtUnread->fetchColumn();
+
             // 3. Check Billing Cycle changes (e.g. payment_status changed)
             // For simplicity, we just check if any billing cycle for the room was updated since last_sync
             // But wait, billing_cycles doesn't have an `updated_at` column. It has `created_at`.
             // Instead, we just fetch the active billing cycle payment status if they want.
             // Since this is a lightweight sync, we just tell the frontend if they need to refresh `fetchStaticData`.
             
+            $hasUpdates = false;
             $triggerFullRefresh = false;
+
             if (count($activities) > 0 || $newNotifsCount > 0) {
                 $hasUpdates = true;
-                $triggerFullRefresh = true; // Tell frontend to refetch dashboard static data
+            }
+
+            // Only trigger full static refresh for actionable financial, billing, or penalty updates
+            $actionableNotifTypes = [
+                'payment_submitted',
+                'payment_verified',
+                'payment_rejected',
+                'bill_overdue',
+                'penalty_applied',
+                'bill_generated',
+                'invoice_created',
+                'cycle_closed',
+                'room_updated',
+                'rate_updated'
+            ];
+
+            foreach ($newNotifsList as $notif) {
+                $nType = $notif['type'] ?? '';
+                $nCat = $notif['category'] ?? '';
+                if (in_array($nType, $actionableNotifTypes) || $nCat === 'billing' || $nCat === 'payment') {
+                    $triggerFullRefresh = true;
+                    break;
+                }
+            }
+
+            if (!$triggerFullRefresh) {
+                foreach ($activities as $act) {
+                    $aType = $act['type'] ?? '';
+                    $title = $act['title'] ?? '';
+                    $msg = $act['message'] ?? ($act['description'] ?? '');
+                    if (in_array($aType, ['payment', 'billing', 'room', 'penalty']) || 
+                        stripos($title, 'payment') !== false ||
+                        stripos($title, 'invoice') !== false ||
+                        stripos($title, 'bill') !== false ||
+                        stripos($msg, 'payment') !== false ||
+                        stripos($msg, 'invoice') !== false ||
+                        stripos($msg, 'bill') !== false) {
+                        $triggerFullRefresh = true;
+                        break;
+                    }
+                }
             }
 
             $responsePayload = [
@@ -66,6 +113,7 @@ class SyncController {
                 'trigger_full_refresh' => $triggerFullRefresh,
                 'new_activities' => $activities,
                 'new_notifications_count' => $newNotifsCount,
+                'unread_notifications_count' => $unreadNotificationsCount,
                 'new_notifications' => $newNotifsList,
                 'server_timestamp' => date('Y-m-d H:i:s')
             ];

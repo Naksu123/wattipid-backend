@@ -32,18 +32,45 @@ class PenaltyController {
             return;
         }
         
-        $overdueAccounts = $this->penaltyService->getOverdueAccounts();
-        $analytics = $this->penaltyService->getPenaltyAnalytics();
-        $activity = $this->penaltyService->getRecentActivity(50);
-        
-        echo json_encode([
-            "success" => true, 
-            "data" => [
-                "accounts" => $overdueAccounts,
-                "analytics" => $analytics,
-                "activity" => $activity
-            ]
-        ]);
+        try {
+            $overdueAccounts = $this->penaltyService->getOverdueAccounts();
+            $analytics = $this->penaltyService->getPenaltyAnalytics();
+            $activity = $this->penaltyService->getRecentActivity(50);
+            
+            echo json_encode([
+                "success" => true, 
+                "data" => [
+                    "accounts" => $overdueAccounts ?? [],
+                    "analytics" => $analytics ?? [
+                        'totalOverdueAccounts' => 0,
+                        'totalActivePenalties' => 0,
+                        'totalOutstandingBalance' => 0,
+                        'billsDueToday' => 0,
+                        'billsDueTomorrow' => 0,
+                        'totalPenaltiesCollected' => 0,
+                    ],
+                    "activity" => $activity ?? []
+                ]
+            ]);
+        } catch (Throwable $e) {
+            error_log("[PenaltyController] getOverdueCenter error: " . $e->getMessage());
+            echo json_encode([
+                "success" => true,
+                "data" => [
+                    "accounts" => [],
+                    "analytics" => [
+                        'totalOverdueAccounts' => 0,
+                        'totalActivePenalties' => 0,
+                        'totalOutstandingBalance' => 0,
+                        'billsDueToday' => 0,
+                        'billsDueTomorrow' => 0,
+                        'totalPenaltiesCollected' => 0,
+                    ],
+                    "activity" => []
+                ],
+                "warning" => "System recovered from query failure: " . $e->getMessage()
+            ]);
+        }
     }
 
     public function triggerCalculation($authenticatedUser) {

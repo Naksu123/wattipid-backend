@@ -1,7 +1,12 @@
 <?php
 require_once __DIR__ . '/../services/AuthService.php';
 require_once __DIR__ . '/../helpers/ResponseHelper.php';
+require_once __DIR__ . '/../utils/email_service.php';
 
+/**
+ * Class AuthController
+ * @method void testEmailDelivery(array $data)
+ */
 class AuthController {
     private $authService;
 
@@ -84,18 +89,30 @@ class AuthController {
     }
 
     public function sendVerificationCode($data) {
-        $result = $this->authService->sendVerificationCode($data['email'], $data['name'] ?? null);
+        $email = $data['email'] ?? null;
+        if (empty($email)) {
+            ResponseHelper::error("Email is required", 400);
+            return;
+        }
+        $result = $this->authService->sendVerificationCode($email, $data['name'] ?? null);
         ResponseHelper::sendRaw($result);
     }
 
     public function verifyOTP($data) {
-        $result = $this->authService->verifyOTP($data['email'], $data['code'], $data['type'] ?? 'verification');
+        $email = $data['email'] ?? null;
+        $code = $data['code'] ?? null;
+        if (empty($email) || empty($code)) {
+            ResponseHelper::error("Email and verification code are required", 400);
+            return;
+        }
+        $result = $this->authService->verifyOTP($email, $code, $data['type'] ?? 'verification');
         ResponseHelper::sendRaw($result);
     }
 
     public function refreshToken($data) {
-        if (!isset($data['refreshToken'])) {
+        if (empty($data['refreshToken'])) {
             ResponseHelper::error("Refresh token is required", 400);
+            return;
         }
         $result = $this->authService->refreshToken($data['refreshToken']);
         ResponseHelper::sendRaw($result);

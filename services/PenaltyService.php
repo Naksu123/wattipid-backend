@@ -1,10 +1,12 @@
 <?php
 /**
- * PenaltyService - 3-Day Billing Policy Enforcement
+ * PenaltyService - Wattipid Daily Penalty & Overdue Management System
  * 
- * Enforces a strict 3-day payment window. After the due date passes (12:00 AM),
- * the system automatically marks bills as OVERDUE, applies a one-time flat penalty,
- * and triggers notification emails.
+ * Enforces authoritative billing and overdue policy:
+ * - When due date passes, unpaid/partially paid bills become OVERDUE
+ * - Applies deterministic daily percentage penalty based on original outstanding balance
+ * - Guarantees idempotency (locks, daily date stamp, DB unique constraint)
+ * - Safe against missing optional columns and null references
  */
 
 require_once __DIR__ . '/../utils/email_service.php';
@@ -18,12 +20,17 @@ class PenaltyService {
     }
 
     public function getPenaltySettings() {
-        $stmt = $this->conn->query("SELECT setting_key, setting_value FROM settings WHERE setting_key LIKE 'penalty_%' OR setting_key = 'maximum_penalty_percent'");
-        $settings = [];
-        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-            $settings[$row['setting_key']] = $row['setting_value'];
+        try {
+            $stmt = $this->conn->query("SELECT setting_key, setting_value FROM settings WHERE setting_key LIKE 'penalty_%' OR setting_key = 'maximum_penalty_percent' OR setting_key = 'maximum_penalty_limit'");
+            $settings = [];
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $settings[$row['setting_key']] = $row['setting_value'];
+            }
+            return $settings;
+        } catch (Throwable $e) {
+            error_log("[PenaltyService] getPenaltySettings error: " . $e->getMessage());
+            return [];
         }
-        return $settings;
     }
 
     public function updatePenaltySettings($data, $adminId) {
@@ -33,34 +40,27 @@ class PenaltyService {
 
             $updateStmt = $this->conn->prepare("UPDATE settings SET setting_value = ? WHERE setting_key = ?");
             
-            $keys = ['penalty_grace_period_days', 'penalty_type', 'penalty_rate', 'penalty_fixed_amount', 'maximum_penalty_percent'];
+            $keys = ['penalty_grace_period_days', 'penalty_type', 'penalty_rate', 'penalty_fixed_amount', 'maximum_penalty_percent', 'maximum_penalty_limit'];
             foreach ($keys as $key) {
                 if (isset($data[$key])) {
                     $updateStmt->execute([$data[$key], $key]);
                     
                     // Audit log
-                    $auditStmt = $this->conn->prepare("INSERT INTO financial_audit_logs (actor_id, actor_role, action_type, table_affected, record_id, old_value, new_value) VALUES (?, 'admin', 'update_penalty_setting', 'settings', 0, ?, ?)");
-                    $auditStmt->execute([$adminId, $oldSettings[$key] ?? '', $data[$key]]);
+                    try {
+                        $auditStmt = $this->conn->prepare("INSERT INTO financial_audit_logs (actor_id, actor_role, action_type, table_affected, record_id, old_value, new_value) VALUES (?, 'admin', 'update_penalty_setting', 'settings', 0, ?, ?)");
+                        $auditStmt->execute([$adminId, $oldSettings[$key] ?? '', $data[$key]]);
+                    } catch (Throwable $auditErr) {}
                 }
             }
             
             $this->conn->commit();
             return ['success' => true, 'message' => 'Penalty settings updated successfully'];
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             if ($this->conn->inTransaction()) $this->conn->rollBack();
             return ['success' => false, 'message' => 'Failed to update settings: ' . $e->getMessage()];
         }
     }
 
-    /**
-     * Core penalty calculation - runs once daily via lazy evaluation.
-     * 
-     * NEW POLICY:
-     * - No grace period after due date
-     * - Penalty activates at 12:00 AM the day after due date
-     * - One-time flat penalty (configurable %, default 2%)
-     * - Updates billing status, grand_total, and triggers notifications
-     */
     /**
      * Core penalty calculation - runs once daily via lazy evaluation or cron.
      * 
@@ -68,14 +68,13 @@ class PenaltyService {
      * - MySQL Advisory Named Lock ensures only 1 execution at any time
      * - Fast pre-check prevents redundant daily runs
      * - Database UNIQUE (billing_cycle_id, penalty_date) prevents duplicate inserts
-     * - Deterministic absolute balance assignment in billing_cycles
+     * - Deterministic balance assignment in billing_cycles
      * - Decoupled post-commit email & push notification dispatch
      */
     public function calculateDailyPenalties($force = false) {
         $lockAcquired = false;
         try {
             // 1. Concurrency Mutex (Advisory Lock)
-            // Non-blocking (timeout 0). If another request is currently calculating penalties, return immediately.
             $lockStmt = $this->conn->query("SELECT GET_LOCK('wattipid_daily_penalty_lock', 0)");
             $lockAcquired = ($lockStmt && (int)$lockStmt->fetchColumn() === 1);
             if (!$lockAcquired) {
@@ -103,8 +102,10 @@ class PenaltyService {
             $this->conn->beginTransaction();
 
             // Query overdue, unpaid completed billing cycles past due date
-            $sql = "SELECT bc.*, u.id as user_id, u.email as tenant_email 
+            $sql = "SELECT bc.*, u.id as user_id, u.email as tenant_email,
+                           COALESCE(u.name, r.tenant_name, bc.tenant_name, 'Tenant') as resolved_tenant_name
                     FROM billing_cycles bc 
+                    LEFT JOIN rooms r ON r.room_id = bc.room_id
                     LEFT JOIN users u ON u.room_id = bc.room_id AND u.role = 'tenant'
                     WHERE bc.payment_status IN ('unpaid', 'partially_paid', 'overdue')
                     AND bc.due_date IS NOT NULL 
@@ -145,18 +146,35 @@ class PenaltyService {
                 // 3. IDEMPOTENCY CHECK: Did we already generate a penalty for this bill today?
                 $checkExistingStmt->execute([$cycleId, $today]);
                 if ($checkExistingStmt->fetchColumn()) {
-                    // Penalty record for today already exists - SKIP
-                    continue;
+                    continue; // Skip - already penalized today
                 }
 
-                // Ensure exact days calculation (truncating time)
+                // Ensure exact days calculation
                 $daysOverdueStmt = $this->conn->prepare("SELECT DATEDIFF(DATE(NOW()), DATE(?)) as days");
                 $daysOverdueStmt->execute([$cycle['due_date']]);
                 $daysOverdue = max(1, (int)$daysOverdueStmt->fetchColumn());
 
-                // Base balance before any penalties (electricity + misc + rent + previous_bal + add_charges - discounts - amount_paid)
-                $originalBalance = (float)$cycle['grand_total'] - (float)$cycle['amount_paid'] - (float)$cycle['penalty_amount'];
-                
+                // Base original balance before any penalties: standalone charges excluding previous_balance
+                $cElec = (float)($cycle['electricity_charge'] ?? $cycle['total_cost'] ?? 0);
+                $cMisc = (float)($cycle['miscellaneous_fee'] ?? 0);
+                $cRent = (float)($cycle['monthly_rent'] ?? 0);
+                $cAdd = (float)($cycle['additional_charges'] ?? 0);
+                $cDisc = (float)($cycle['discounts'] ?? 0);
+                $cPaid = (float)($cycle['amount_paid'] ?? 0);
+                $cPrevBal = (float)($cycle['previous_balance'] ?? 0);
+                $cycleCurrentPenalty = (float)($cycle['penalty_amount'] ?? 0);
+
+                // Standalone invoice base amount (strictly excludes previous_balance to avoid compounding penalties)
+                $standaloneBase = max(0.00, round($cElec + $cMisc + $cRent + $cAdd - $cDisc, 2));
+
+                // The original balance of THIS individual invoice subject to daily penalty
+                $originalBalance = max(0.00, round($standaloneBase - $cPaid, 2));
+
+                // If original bill was already fully settled, skip penalty application
+                if ($originalBalance <= 0.00) {
+                    continue;
+                }
+
                 // Deterministic formula: (Original * Rate) rounded, THEN multiplied by Days
                 $dailyPenaltyAmount = round($originalBalance * ($penaltyRate / 100), 2);
                 $expectedTotalPenalty = $dailyPenaltyAmount * $daysOverdue;
@@ -165,45 +183,47 @@ class PenaltyService {
                     $expectedTotalPenalty = $maxPenalty;
                 }
 
-                $currentPenaltyAccumulated = (float)$cycle['penalty_amount'];
-                $difference = round($expectedTotalPenalty - $currentPenaltyAccumulated, 2);
+                $difference = round($expectedTotalPenalty - $cycleCurrentPenalty, 2);
 
                 if ($difference > 0) {
                     $newTotalPenalty = $expectedTotalPenalty;
-                    $newGrandTotal = round($originalBalance + (float)$cycle['amount_paid'] + $newTotalPenalty, 2);
-                    $totalOutstanding = round($originalBalance + $newTotalPenalty, 2);
+                    // Invoice total due for this cycle specifically:
+                    $invoiceTotalDue = round($standaloneBase + $newTotalPenalty - $cPaid, 2);
+                    // Grand total on invoice (incorporates previous_balance for billing statement presentation):
+                    $newGrandTotal = round($standaloneBase + $cPrevBal + $newTotalPenalty, 2);
 
-                    // Idempotent deterministic update: writes exact target numbers
+                    // Idempotent deterministic update
                     $updateCycleStmt->execute([$newTotalPenalty, $newGrandTotal, $cycleId]);
+
+                    $tenantDisplayName = $cycle['resolved_tenant_name'] ?: 'Tenant';
 
                     try {
                         $logStmt->execute([
                             $cycleId, 
                             $cycle['room_id'], 
                             $cycle['user_id'] ?? null,
-                            $cycle['tenant_name'], 
+                            $tenantDisplayName, 
                             $originalBalance, 
                             $difference, 
                             $today,
                             $daysOverdue,
                             $penaltyRate,
                             $newTotalPenalty,
-                            $totalOutstanding
+                            $invoiceTotalDue
                         ]);
                         $penaltiesApplied++;
 
-                        // Queue notification data for post-commit delivery
                         $notificationsToSend[] = [
                             'user_id' => $cycle['user_id'] ?? null,
                             'tenant_email' => $cycle['tenant_email'] ?? '',
-                            'tenant_name' => $cycle['tenant_name'] ?? 'Tenant',
+                            'tenant_name' => $tenantDisplayName,
                             'room_id' => $cycle['room_id'],
                             'cycle_id' => $cycleId,
                             'original_balance' => $originalBalance,
                             'daily_penalty' => $dailyPenaltyAmount,
                             'difference' => $difference,
                             'total_penalty' => $newTotalPenalty,
-                            'total_outstanding' => $totalOutstanding,
+                            'total_outstanding' => $invoiceTotalDue,
                             'days_overdue' => $daysOverdue
                         ];
                     } catch (PDOException $dupEx) {
@@ -221,7 +241,6 @@ class PenaltyService {
             $this->conn->commit();
 
             // 4. Post-Commit Network I/O (Email & Push Notifications)
-            // Running this AFTER commit prevents holding database locks during SMTP/Push round-trips
             foreach ($notificationsToSend as $notif) {
                 if ($autoEmail && !empty($notif['tenant_email'])) {
                     try {
@@ -243,7 +262,7 @@ class PenaltyService {
                             '',
                             'penalty_notice'
                         );
-                    } catch (Exception $emailEx) {
+                    } catch (Throwable $emailEx) {
                         error_log("Failed to send penalty email: " . $emailEx->getMessage());
                     }
                 }
@@ -271,28 +290,35 @@ class PenaltyService {
                             ])
                         ]);
 
-                        require_once __DIR__ . '/../utils/notification_engine.php';
-                        $notifEngine = new NotificationEngine($this->conn);
-                        $notifEngine->sendPushNotification($notif['user_id'], [
-                            'title' => '⚠️ Daily Penalty Applied',
-                            'message' => "Your bill is overdue by {$notif['days_overdue']} days. A daily penalty was applied. Total: ₱" . number_format($notif['total_outstanding'], 2)
-                        ]);
-                    } catch (Exception $pushEx) {
+                        if (file_exists(__DIR__ . '/../utils/notification_engine.php')) {
+                            require_once __DIR__ . '/../utils/notification_engine.php';
+                            if (class_exists('NotificationEngine')) {
+                                $notifEngine = new NotificationEngine($this->conn);
+                                $notifEngine->sendPushNotification($notif['user_id'], [
+                                    'title' => '⚠️ Daily Penalty Applied',
+                                    'message' => "Your bill is overdue by {$notif['days_overdue']} days. A daily penalty was applied. Total: ₱" . number_format($notif['total_outstanding'], 2)
+                                ]);
+                            }
+                        }
+                    } catch (Throwable $pushEx) {
                         error_log("Failed to send penalty push: " . $pushEx->getMessage());
                     }
                 }
             }
 
-            return ['success' => true, 'message' => "Successfully applied daily penalties to $penaltiesApplied accounts.", 'count' => $penaltiesApplied];
+            return ['success' => true, 'message' => "Successfully evaluated daily penalties ($penaltiesApplied applied).", 'count' => $penaltiesApplied];
 
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             if ($this->conn->inTransaction()) {
                 $this->conn->rollBack();
             }
+            error_log("[PenaltyService] calculateDailyPenalties error: " . $e->getMessage());
             return ['success' => false, 'message' => 'Failed to calculate penalties: ' . $e->getMessage()];
         } finally {
             if ($lockAcquired) {
-                $this->conn->query("SELECT RELEASE_LOCK('wattipid_daily_penalty_lock')");
+                try {
+                    $this->conn->query("SELECT RELEASE_LOCK('wattipid_daily_penalty_lock')");
+                } catch (Throwable $t) {}
             }
         }
     }
@@ -305,59 +331,94 @@ class PenaltyService {
                 return ["success" => true, "message" => "Penalty waived successfully."];
             }
             return ["success" => false, "message" => "Billing cycle not found or not overdue."];
-        } catch (PDOException $e) {
+        } catch (Throwable $e) {
             return ["success" => false, "message" => "Database error: " . $e->getMessage()];
         }
     }
 
     public function getOverdueAccounts() {
-        $sql = "SELECT b.id, b.room_id, b.tenant_name, b.due_date,
-                b.grand_total, b.amount_paid, b.miscellaneous_fee, b.electricity_charge,
-                GREATEST(0.00, b.grand_total - COALESCE(b.penalty_amount, 0) - COALESCE(b.amount_paid, 0)) as original_balance,
-                b.penalty_amount, 
-                GREATEST(0.00, b.grand_total - COALESCE(b.amount_paid, 0)) as total_amount_due,
-                DATEDIFF(NOW(), b.due_date) as days_overdue
-                FROM billing_cycles b 
-                WHERE b.payment_status IN ('unpaid', 'partially_paid', 'overdue') 
-                AND b.due_date < CURDATE()
-                AND b.status = 'completed'
-                AND (b.grand_total - COALESCE(b.amount_paid, 0.00)) > 0.00
-                ORDER BY days_overdue DESC";
-        $stmt = $this->conn->query($sql);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        try {
+            $sql = "SELECT b.id, b.room_id, b.invoice_number,
+                           COALESCE(u.name, r.tenant_name, b.tenant_name, 'Tenant') as tenant_name,
+                           b.due_date,
+                           b.previous_balance,
+                           COALESCE(b.amount_paid, 0.00) as amount_paid,
+                           COALESCE(b.penalty_amount, 0.00) as penalty_amount,
+                           GREATEST(0.00, (COALESCE(b.electricity_charge, b.total_cost, 0.00) + COALESCE(b.miscellaneous_fee, 0.00) + COALESCE(b.monthly_rent, 0.00) + COALESCE(b.additional_charges, 0.00) - COALESCE(b.discounts, 0.00)) - COALESCE(b.amount_paid, 0.00)) as original_balance,
+                           GREATEST(0.00, (COALESCE(b.electricity_charge, b.total_cost, 0.00) + COALESCE(b.miscellaneous_fee, 0.00) + COALESCE(b.monthly_rent, 0.00) + COALESCE(b.additional_charges, 0.00) - COALESCE(b.discounts, 0.00) + COALESCE(b.penalty_amount, 0.00)) - COALESCE(b.amount_paid, 0.00)) as total_amount_due,
+                           DATEDIFF(NOW(), b.due_date) as days_overdue
+                    FROM billing_cycles b 
+                    LEFT JOIN rooms r ON b.room_id = r.room_id
+                    LEFT JOIN users u ON u.room_id = b.room_id AND u.role = 'tenant'
+                    WHERE b.payment_status IN ('unpaid', 'partially_paid', 'overdue') 
+                      AND b.due_date IS NOT NULL
+                      AND b.due_date < NOW()
+                      AND b.status = 'completed'
+                      AND ((COALESCE(b.electricity_charge, b.total_cost, 0.00) + COALESCE(b.miscellaneous_fee, 0.00) + COALESCE(b.monthly_rent, 0.00) + COALESCE(b.additional_charges, 0.00) - COALESCE(b.discounts, 0.00) + COALESCE(b.penalty_amount, 0.00)) - COALESCE(b.amount_paid, 0.00)) > 0.00
+                    ORDER BY days_overdue DESC";
+            $stmt = $this->conn->query($sql);
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) {
+            error_log("[PenaltyService] getOverdueAccounts error: " . $e->getMessage());
+            return [];
+        }
     }
     
     public function getPenaltyAnalytics() {
-        $sqlTotalOverdue = "SELECT COUNT(*) FROM billing_cycles WHERE payment_status IN ('unpaid', 'partially_paid', 'overdue') AND due_date < CURDATE() AND status = 'completed' AND (grand_total - COALESCE(amount_paid, 0.00)) > 0.00";
-        $sqlTotalPenalty = "SELECT COALESCE(SUM(penalty_amount), 0) FROM billing_cycles WHERE payment_status IN ('unpaid', 'partially_paid', 'overdue') AND due_date < CURDATE() AND status = 'completed' AND (grand_total - COALESCE(amount_paid, 0.00)) > 0.00";
-        $sqlTotalOutstanding = "SELECT COALESCE(SUM(GREATEST(0.00, grand_total - COALESCE(amount_paid, 0))), 0) FROM billing_cycles WHERE payment_status IN ('unpaid', 'partially_paid', 'overdue') AND due_date < CURDATE() AND status = 'completed'";
-        $sqlDueToday = "SELECT COUNT(*) FROM billing_cycles WHERE payment_status = 'unpaid' AND DATE(due_date) = CURDATE() AND status = 'completed'";
-        $sqlDueTomorrow = "SELECT COUNT(*) FROM billing_cycles WHERE payment_status = 'unpaid' AND DATE(due_date) = DATE_ADD(CURDATE(), INTERVAL 1 DAY) AND status = 'completed'";
-        $sqlPenaltiesCollected = "SELECT COALESCE(SUM(penalty_amount), 0) FROM billing_cycles WHERE penalty_amount > 0";
-        
-        return [
-            'totalOverdueAccounts' => $this->conn->query($sqlTotalOverdue)->fetchColumn(),
-            'totalActivePenalties' => $this->conn->query($sqlTotalPenalty)->fetchColumn(),
-            'totalOutstandingBalance' => $this->conn->query($sqlTotalOutstanding)->fetchColumn(),
-            'billsDueToday' => $this->conn->query($sqlDueToday)->fetchColumn(),
-            'billsDueTomorrow' => $this->conn->query($sqlDueTomorrow)->fetchColumn(),
-            'totalPenaltiesCollected' => $this->conn->query($sqlPenaltiesCollected)->fetchColumn(),
-        ];
+        try {
+            $sqlTotalOverdue = "SELECT COUNT(*) FROM billing_cycles WHERE payment_status IN ('unpaid', 'partially_paid', 'overdue') AND due_date IS NOT NULL AND due_date < NOW() AND status = 'completed' AND ((COALESCE(electricity_charge, total_cost, 0.00) + COALESCE(miscellaneous_fee, 0.00) + COALESCE(monthly_rent, 0.00) + COALESCE(additional_charges, 0.00) - COALESCE(discounts, 0.00) + COALESCE(penalty_amount, 0.00)) - COALESCE(amount_paid, 0.00)) > 0.00";
+            $sqlTotalPenalty = "SELECT COALESCE(SUM(penalty_amount), 0) FROM billing_cycles WHERE payment_status IN ('unpaid', 'partially_paid', 'overdue') AND due_date IS NOT NULL AND due_date < NOW() AND status = 'completed'";
+            $sqlTotalOutstanding = "SELECT COALESCE(SUM(GREATEST(0.00, (COALESCE(electricity_charge, total_cost, 0.00) + COALESCE(miscellaneous_fee, 0.00) + COALESCE(monthly_rent, 0.00) + COALESCE(additional_charges, 0.00) - COALESCE(discounts, 0.00) + COALESCE(penalty_amount, 0.00)) - COALESCE(amount_paid, 0.00))), 0) FROM billing_cycles WHERE payment_status IN ('unpaid', 'partially_paid', 'overdue') AND due_date IS NOT NULL AND due_date < NOW() AND status = 'completed'";
+            $sqlDueToday = "SELECT COUNT(*) FROM billing_cycles WHERE payment_status IN ('unpaid', 'partially_paid') AND DATE(due_date) = CURDATE() AND status = 'completed'";
+            $sqlDueTomorrow = "SELECT COUNT(*) FROM billing_cycles WHERE payment_status IN ('unpaid', 'partially_paid') AND DATE(due_date) = DATE_ADD(CURDATE(), INTERVAL 1 DAY) AND status = 'completed'";
+            $sqlPenaltiesCollected = "SELECT COALESCE(SUM(penalty_amount), 0) FROM billing_cycles WHERE penalty_amount > 0";
+            
+            return [
+                'totalOverdueAccounts' => (int)$this->conn->query($sqlTotalOverdue)->fetchColumn(),
+                'totalActivePenalties' => (float)$this->conn->query($sqlTotalPenalty)->fetchColumn(),
+                'totalOutstandingBalance' => (float)$this->conn->query($sqlTotalOutstanding)->fetchColumn(),
+                'billsDueToday' => (int)$this->conn->query($sqlDueToday)->fetchColumn(),
+                'billsDueTomorrow' => (int)$this->conn->query($sqlDueTomorrow)->fetchColumn(),
+                'totalPenaltiesCollected' => (float)$this->conn->query($sqlPenaltiesCollected)->fetchColumn(),
+            ];
+        } catch (Throwable $e) {
+            error_log("[PenaltyService] getPenaltyAnalytics error: " . $e->getMessage());
+            return [
+                'totalOverdueAccounts' => 0,
+                'totalActivePenalties' => 0.00,
+                'totalOutstandingBalance' => 0.00,
+                'billsDueToday' => 0,
+                'billsDueTomorrow' => 0,
+                'totalPenaltiesCollected' => 0.00,
+            ];
+        }
     }
 
     public function getRecentActivity($limit = 50) {
-        $sql = "SELECT ph.id, ph.billing_cycle_id, ph.room_id, ph.tenant_name, ph.penalty_amount, 
-                       ph.penalty_type, ph.penalty_date, ph.created_at, ph.days_overdue,
-                       ph.running_total_penalty, ph.current_outstanding_balance
-                FROM penalty_history ph
-                JOIN billing_cycles bc ON bc.id = ph.billing_cycle_id
-                WHERE bc.payment_status IN ('unpaid', 'partially_paid', 'overdue')
-                ORDER BY ph.id DESC 
-                LIMIT ?";
-        $stmt = $this->conn->prepare($sql);
-        $stmt->bindValue(1, $limit, PDO::PARAM_INT);
-        $stmt->execute();
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        try {
+            $limit = max(1, min(100, (int)$limit));
+            $sql = "SELECT ph.id, ph.billing_cycle_id, ph.room_id, bc.invoice_number,
+                           COALESCE(ph.tenant_name, u.name, r.tenant_name, 'Tenant') as tenant_name,
+                           ph.penalty_amount, 
+                           ph.penalty_type, 
+                           COALESCE(ph.penalty_date, DATE(ph.created_at)) as penalty_date, 
+                           ph.created_at, 
+                           COALESCE(ph.days_overdue, 1) as days_overdue,
+                           COALESCE(ph.running_total_penalty, ph.penalty_amount) as running_total_penalty, 
+                           COALESCE(ph.current_outstanding_balance, 0.00) as current_outstanding_balance
+                    FROM penalty_history ph
+                    LEFT JOIN billing_cycles bc ON bc.id = ph.billing_cycle_id
+                    LEFT JOIN rooms r ON ph.room_id = r.room_id
+                    LEFT JOIN users u ON u.room_id = ph.room_id AND u.role = 'tenant'
+                    WHERE bc.payment_status IN ('unpaid', 'partially_paid', 'overdue')
+                    ORDER BY ph.id DESC 
+                    LIMIT $limit";
+            $stmt = $this->conn->query($sql);
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) {
+            error_log("[PenaltyService] getRecentActivity error: " . $e->getMessage());
+            return [];
+        }
     }
 
     // =========================================================

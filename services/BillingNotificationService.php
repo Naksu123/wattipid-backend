@@ -630,50 +630,87 @@ class BillingNotificationService {
     // =========================================================
     // LANDLORD NOTIFICATIONS
     // =========================================================
-    public function sendPaymentSubmittedAlert($roomId, $tenantId, $tenantName, $amount, $paymentMethod, $referenceNumber, $paymentId) {
-        // Find the landlord for this room
+    public function sendPaymentSubmittedAlert($roomId, $tenantId, $tenantName, $amount, $paymentMethod, $referenceNumber, $paymentId, $billingCycleId = null, $invoiceNumber = null) {
+        // 1. Defensively resolve tenant name if missing
+        if (empty($tenantName)) {
+            if ($tenantId) {
+                $uStmt = $this->conn->prepare("SELECT name FROM users WHERE id = ?");
+                $uStmt->execute([$tenantId]);
+                $tenantName = $uStmt->fetchColumn();
+            }
+            if (empty($tenantName) && $roomId) {
+                $rStmt = $this->conn->prepare("SELECT tenant_name FROM rooms WHERE id = ?");
+                $rStmt->execute([$roomId]);
+                $tenantName = $rStmt->fetchColumn();
+            }
+            if (empty($tenantName)) {
+                $tenantName = "Tenant";
+            }
+        }
+
+        // 2. Format room display name cleanly (e.g. "Room 1")
+        $roomDisplay = (stripos(trim($roomId), 'room') === 0) ? trim($roomId) : "Room " . trim($roomId);
+
+        // 3. Find active landlord(s)
         $stmt = $this->conn->prepare("
-            SELECT id, name 
+            SELECT id, name, email 
             FROM users 
             WHERE role = 'landlord'
-            LIMIT 1
         ");
         $stmt->execute();
-        $landlord = $stmt->fetch(PDO::FETCH_ASSOC);
+        $landlords = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        if (!$landlord) return false;
+        if (empty($landlords)) return false;
 
-        $landlordId = $landlord['id'];
+        $amountFormatted = number_format((float)$amount, 2);
+        $submissionDate = date('Y-m-d H:i:s');
+        $lastNotifId = null;
 
-        // Prevent duplicate notification during retries
-        $checkStmt = $this->conn->prepare("
-            SELECT id FROM notification_history 
-            WHERE user_id = ? AND type = 'payment_submitted' AND JSON_EXTRACT(data_json, '$.paymentId') = ?
-            LIMIT 1
-        ");
-        $checkStmt->execute([$landlordId, $paymentId]);
-        if ($checkStmt->fetchColumn()) return false;
+        foreach ($landlords as $landlord) {
+            $landlordId = (int)$landlord['id'];
 
-        $alert = [
-            'type' => 'payment_submitted',
-            'category' => 'system',
-            'severity' => 'info',
-            'title' => 'New Payment Received',
-            'message' => "{$tenantName} submitted ₱" . number_format($amount, 2) . " for Room {$roomId}. Payment requires verification.",
-            'data' => [
-                'paymentId' => $paymentId,
-                'roomId' => $roomId,
-                'tenantId' => $tenantId,
-                'amount' => $amount,
-                'method' => $paymentMethod,
-                'reference' => $referenceNumber
-            ]
-        ];
+            // Prevent duplicate notification during retries/refresh
+            $checkStmt = $this->conn->prepare("
+                SELECT id FROM notification_history 
+                WHERE user_id = ? AND type = 'payment_submitted' AND JSON_UNQUOTE(JSON_EXTRACT(data_json, '$.paymentId')) = ?
+                LIMIT 1
+            ");
+            $checkStmt->execute([$landlordId, (string)$paymentId]);
+            if ($checkStmt->fetchColumn()) {
+                continue;
+            }
 
-        $notifId = $this->saveNotification($landlordId, $roomId, $alert);
-        $this->queuePush($landlordId, $alert);
-        
-        return $notifId;
+            $alert = [
+                'type' => 'payment_submitted',
+                'category' => 'payment',
+                'severity' => 'info',
+                'title' => 'New Payment Submitted',
+                'message' => "{$tenantName} from {$roomDisplay} submitted a payment of ₱{$amountFormatted} for verification.",
+                'data' => [
+                    'paymentId' => (int)$paymentId,
+                    'billingCycleId' => $billingCycleId ? (int)$billingCycleId : null,
+                    'invoiceNumber' => $invoiceNumber,
+                    'roomId' => $roomId,
+                    'tenantId' => (int)$tenantId,
+                    'tenantName' => $tenantName,
+                    'amount' => (float)$amount,
+                    'method' => $paymentMethod,
+                    'reference' => $referenceNumber,
+                    'status' => 'pending',
+                    'submissionDate' => $submissionDate
+                ]
+            ];
+
+            try {
+                $notifId = $this->saveNotification($landlordId, $roomId, $alert);
+                $lastNotifId = $notifId;
+                $this->queuePush($landlordId, $alert);
+            } catch (Throwable $e) {
+                error_log("[BillingNotifSvc] Error creating landlord payment notification: " . $e->getMessage());
+            }
+        }
+
+        return $lastNotifId;
     }
 
     private function queuePush($userId, $alert) {
@@ -681,8 +718,9 @@ class BillingNotificationService {
             require_once __DIR__ . '/../utils/notification_engine.php';
             $engine = new NotificationEngine($this->conn);
             $engine->sendPushNotification($userId, $alert);
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             error_log("[BillingNotifSvc] Push direct send error: " . $e->getMessage());
         }
     }
 }
+

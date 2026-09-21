@@ -27,7 +27,7 @@ class BudgetService {
             
             if ($pastRow) {
                 // Auto-rollover this budget for the current month
-                $insertStmt = $this->conn->prepare("INSERT INTO budget_settings (room_id, monthly_budget, daily_allowance, weekly_allowance, month, year) VALUES (?, ?, ?, ?, ?, ?)");
+                $insertStmt = $this->conn->prepare("INSERT INTO budget_settings (room_id, monthly_budget, daily_allowance, weekly_allowance, month, year) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE monthly_budget = VALUES(monthly_budget), daily_allowance = VALUES(daily_allowance), weekly_allowance = VALUES(weekly_allowance)");
                 $insertStmt->execute([$roomId, $pastRow['monthly_budget'], $pastRow['daily_allowance'], $pastRow['weekly_allowance'], $month, $year]);
                 
                 // Fetch the newly inserted row
@@ -83,4 +83,5 @@ class BudgetService {
         return ['success' => true, 'message' => 'Budget reset successfully'];
     }
 }
+
 
