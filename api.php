@@ -108,8 +108,9 @@ try {
     }
 
     // Lazy Evaluation: Calculate daily penalties if they haven't been calculated today.
-    // We only trigger this for authenticated landlord routes to avoid slowing down public/IoT APIs
-    if ($authenticatedUser && $authenticatedUser['role'] === 'landlord') {
+    // Triggers for landlords or whenever any user accesses billing / payment actions
+    $billingActions = ['getTenantBillingOverview', 'getAvailableBillingCycles', 'getBillingHistory', 'syncState'];
+    if ($authenticatedUser && ($authenticatedUser['role'] === 'landlord' || in_array($action, $billingActions))) {
         require_once __DIR__ . '/services/PenaltyService.php';
         $penaltySvc = new PenaltyService($conn);
         // calculateDailyPenalties() has a built-in cache check so it only runs once per day

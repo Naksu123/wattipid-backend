@@ -715,9 +715,10 @@ class PaymentController {
             $totalOverdueBase = 0.00;
             $totalOverduePenalties = 0.00;
             $totalOverdue = 0.00;
+            $totalPendingVerification = 0.00;
 
             // Separate completed cycles into:
-            // - Overdue bills (due date passed and not settled)
+            // - Overdue / pending verification bills (prior cycles not yet fully settled)
             // - Current generated bill (not overdue, unpaid)
             $candidateCurrentCycle = null;
 
@@ -738,6 +739,16 @@ class PaymentController {
                     $c['payment_status'] = 'paid';
                 }
 
+                // Check for any pending payment awaiting landlord verification
+                $stmtPending = $this->db->prepare("SELECT id, amount, payment_method, reference_number, created_at FROM payments WHERE billing_cycle_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1");
+                $stmtPending->execute([$c['id']]);
+                $pendingPayment = $stmtPending->fetch(PDO::FETCH_ASSOC);
+
+                if ($pendingPayment && $c['payment_status'] !== 'paid') {
+                    $c['payment_status'] = 'pending_verification';
+                }
+
+                $isPending = ($c['payment_status'] === 'pending_verification');
                 $isOverdue = ($c['payment_status'] === 'overdue');
                 $daysOverdue = 0;
 
@@ -745,13 +756,13 @@ class PaymentController {
                     $dueTimestamp = strtotime($c['due_date']);
                     if ($dueTimestamp < time()) {
                         $daysOverdue = (int)floor((time() - $dueTimestamp) / 86400);
-                        if ($daysOverdue > 0 && $c['payment_status'] !== 'paid') {
+                        if ($daysOverdue > 0 && $c['payment_status'] !== 'paid' && !$isPending) {
                             $isOverdue = true;
                         }
                     }
                 }
 
-                if ($isOverdue && $c['payment_status'] !== 'paid') {
+                if (($isOverdue || $isPending) && $c['payment_status'] !== 'paid') {
                     $remOverdue = max(0.00, round($baseAmount + $cPen - $cPaid, 2));
                     if ($remOverdue > 0.01) {
                         $overdueBills[] = [
@@ -761,6 +772,8 @@ class PaymentController {
                             'cycle_end' => $c['cycle_end'],
                             'due_date' => $c['due_date'],
                             'payment_status' => $c['payment_status'],
+                            'is_pending_verification' => $isPending,
+                            'pending_payment' => $pendingPayment ?: null,
                             'days_overdue' => $daysOverdue,
                             'total_kwh' => (float)($c['total_kwh'] ?? 0),
                             'rate_per_kwh' => (float)($c['rate_per_kwh'] ?? 12.50),
@@ -775,11 +788,16 @@ class PaymentController {
                             'amount_paid' => $cPaid,
                             'total_overdue' => $remOverdue
                         ];
-                        $totalOverdueBase += max(0.00, $baseAmount - $cPaid);
-                        $totalOverduePenalties += $cPen;
-                        $totalOverdue += $remOverdue;
+
+                        if ($isPending) {
+                            $totalPendingVerification += $remOverdue;
+                        } else {
+                            $totalOverdueBase += max(0.00, $baseAmount - $cPaid);
+                            $totalOverduePenalties += $cPen;
+                            $totalOverdue += $remOverdue;
+                        }
                     }
-                } else if (!$isOverdue && $candidateCurrentCycle === null && $c['payment_status'] !== 'paid') {
+                } else if (!$isOverdue && !$isPending && $candidateCurrentCycle === null && $c['payment_status'] !== 'paid') {
                     $candidateCurrentCycle = $c;
                 }
             }
@@ -889,6 +907,7 @@ class PaymentController {
                 'previous_balance' => round($totalOverdueBase, 2),
                 'overdue_penalties' => round($totalOverduePenalties, 2),
                 'total_overdue' => round($totalOverdue, 2),
+                'pending_verification' => round($totalPendingVerification, 2),
                 'grand_total' => round($totalCurrentDue + $totalOverdue, 2)
             ];
 
@@ -899,7 +918,8 @@ class PaymentController {
                     "current_bill_state" => $currentBillState, // 'generated' | 'cycle_active' | 'none'
                     "active_cycle" => $activeCycle,
                     "current_bill" => $currentBill,
-                    "has_overdue" => !empty($overdueBills),
+                    "has_overdue" => ($totalOverdue > 0.01),
+                    "has_pending" => ($totalPendingVerification > 0.01),
                     "overdue_bills" => $overdueBills,
                     "paid_bills" => $paidBills,
                     "total_outstanding" => $totalOutstanding
