@@ -98,6 +98,9 @@ class Router {
             case 'logout':
                 $this->authController->logout($authenticatedUser);
                 return true;
+            case 'changePassword':
+                $this->authController->changePassword($authenticatedUser, $data);
+                return true;
 
             case 'logConsumption':
                 $this->iotController->logConsumption($data);

@@ -1,19 +1,26 @@
 <?php
 require_once __DIR__ . '/../repositories/DashboardRepository.php';
-
 require_once __DIR__ . '/../repositories/UserRepository.php';
+require_once __DIR__ . '/BudgetService.php';
+require_once __DIR__ . '/BillingCycleService.php';
 
 class DashboardService
 {
     private $dashboardRepo;
     private $userRepo;
     private $conn;
+    /** @var BudgetService */
+    private $budgetService;
+    /** @var BillingCycleService */
+    private $billingCycleService;
 
     public function __construct($dbConnection)
     {
         $this->conn = $dbConnection;
         $this->dashboardRepo = new DashboardRepository($dbConnection);
         $this->userRepo = new UserRepository($dbConnection);
+        $this->budgetService = new BudgetService($dbConnection);
+        $this->billingCycleService = new BillingCycleService($dbConnection);
     }
 
     private function resolveIdentifier($roomId, $userId, $role)
@@ -22,11 +29,20 @@ class DashboardService
     }
 
     /**
-     * Fetch the current configured rate_per_kwh from settings.
-     * Falls back to 12.50 if not set.
+     * Fetch the current configured rate_per_kwh for a room.
+     * Checks rooms.utility_rate first, falls back to settings.rate_per_kwh, then 12.50.
      */
-    private function getCurrentRate()
+    private function getCurrentRate($roomId = null)
     {
+        if ($roomId) {
+            $stmt = $this->conn->prepare("SELECT utility_rate FROM rooms WHERE room_id = ? LIMIT 1");
+            $stmt->execute([$roomId]);
+            $val = $stmt->fetchColumn();
+            if (!empty($val) && floatval($val) > 0) {
+                return floatval($val);
+            }
+        }
+
         $stmt = $this->conn->prepare("SELECT setting_value FROM settings WHERE setting_key = 'rate_per_kwh' LIMIT 1");
         $stmt->execute();
         $val = $stmt->fetchColumn();
@@ -37,9 +53,9 @@ class DashboardService
      * Recalculate totalCost from totalEnergy × current rate
      * so the dashboard always reflects the latest configured rate.
      */
-    private function recalculateCost($data)
+    private function recalculateCost($data, $roomId = null)
     {
-        $rate = $this->getCurrentRate();
+        $rate = $this->getCurrentRate($roomId);
         $data['totalCost'] = round(floatval($data['totalEnergy'] ?? 0) * $rate, 2);
         return $data;
     }
@@ -66,9 +82,7 @@ class DashboardService
     {
         $id = $this->resolveIdentifier($roomId, $userId, $role);
 
-        require_once __DIR__ . '/BillingCycleService.php';
-        $billingService = new BillingCycleService($this->conn);
-        $billingService->advanceCycleIfNeeded($id['value']);
+        $this->billingCycleService->advanceCycleIfNeeded($id['value']);
 
         $stmt = $this->conn->prepare("SELECT cycle_start, cycle_end FROM billing_cycles WHERE room_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1");
         $stmt->execute([$id['value']]);
@@ -80,9 +94,7 @@ class DashboardService
 
         $consumption = $this->dashboardRepo->getTotalConsumption($id['column'], $id['value'], $activeCycle['cycle_start'], $activeCycle['cycle_end']);
 
-        require_once __DIR__ . '/BudgetService.php';
-        $budgetService = new BudgetService($this->conn);
-        $budgetRes = $budgetService->getBudget($id['value'], (int) date('m'), (int) date('Y'));
+        $budgetRes = $this->budgetService->getBudget($id['value'], (int) date('m'), (int) date('Y'));
 
         return [
             'success' => true,
@@ -100,7 +112,7 @@ class DashboardService
         $id = $this->resolveIdentifier($roomId, $userId, $role);
         $start = date('Y-m-d 00:00:00');
         $end = date('Y-m-d 00:00:00', strtotime('+1 day'));
-        return ['success' => true, 'data' => $this->recalculateCost($this->dashboardRepo->getTotalConsumption($id['column'], $id['value'], $start, $end))];
+        return ['success' => true, 'data' => $this->recalculateCost($this->dashboardRepo->getTotalConsumption($id['column'], $id['value'], $start, $end), $id['value'])];
     }
 
     public function getTotalConsumptionWeek($roomId, $userId, $role)
@@ -120,19 +132,17 @@ class DashboardService
         $start = ($activeCycleStart && $activeCycleStart > $calendarStart) ? $activeCycleStart : $calendarStart;
         $end = date('Y-m-d 00:00:00', strtotime('+1 day'));
 
-        return ['success' => true, 'data' => $this->recalculateCost($this->dashboardRepo->getTotalConsumption($id['column'], $id['value'], $start, $end))];
+        return ['success' => true, 'data' => $this->recalculateCost($this->dashboardRepo->getTotalConsumption($id['column'], $id['value'], $start, $end), $id['value'])];
     }
 
     public function getTotalConsumptionMonth($roomId, $userId, $role)
     {
         $id = $this->resolveIdentifier($roomId, $userId, $role);
 
-        require_once __DIR__ . '/BillingCycleService.php';
-        $billingService = new BillingCycleService($this->conn);
-        $billingService->advanceCycleIfNeeded($id['value']);
+        $this->billingCycleService->advanceCycleIfNeeded($id['value']);
 
         // Use the new authoritative method for the Live Bill Breakdown
-        $liveBill = $billingService->getLiveBillBreakdown($id['value']);
+        $liveBill = $this->billingCycleService->getLiveBillBreakdown($id['value']);
 
         if (!$liveBill['cycle_start']) {
             return ['success' => false, 'message' => 'No active billing cycle found.'];
@@ -197,15 +207,15 @@ class DashboardService
         $cycleId = $stmt->fetchColumn();
 
         if ($cycleId) {
-            require_once __DIR__ . '/BillingCycleService.php';
-            $billingService = new BillingCycleService($this->conn);
-            $liveBill = $billingService->getLiveBillBreakdown($id['value'], $cycleId);
+            $liveBill = $this->billingCycleService->getLiveBillBreakdown($id['value'], $cycleId);
 
             return [
                 'success' => true,
                 'data' => [
                     'totalEnergy' => $liveBill['consumptionKwh'],
-                    'totalCost' => $liveBill['totalAmountDue'],
+                    'totalCost' => $liveBill['electricityCharge'],
+                    'totalAmountDue' => $liveBill['totalAmountDue'],
+                    'liveBillTotal' => $liveBill['totalAmountDue'],
                     'electricityCharge' => $liveBill['electricityCharge'],
                     'additionalCharges' => $liveBill['additionalCharges'],
                     'monthlyRent' => $liveBill['monthlyRent'],
@@ -220,7 +230,7 @@ class DashboardService
         // Fallback for periods with no cycle
         list($start, $end) = $this->getCycleBoundsForMonth($id['value'], $year, $month);
         $data = $this->dashboardRepo->getTotalConsumption($id['column'], $id['value'], $start, $end);
-        return ['success' => true, 'data' => $this->recalculateCost($data)];
+        return ['success' => true, 'data' => $this->recalculateCost($data, $id['value'])];
     }
 
     public function getHourlyBreakdown($roomId, $userId, $role, $dateStr = null)

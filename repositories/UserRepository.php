@@ -89,4 +89,9 @@ class UserRepository {
         $stmt = $this->conn->prepare("UPDATE users SET push_token = ? WHERE id = ?");
         return $stmt->execute([$token, $userId]);
     }
+
+    public function updatePasswordHash($userId, $newPasswordHash) {
+        $stmt = $this->conn->prepare("UPDATE users SET password_hash = ? WHERE id = ?");
+        return $stmt->execute([$newPasswordHash, $userId]);
+    }
 }

@@ -439,4 +439,56 @@ class AuthService {
         
         return $result;
     }
+
+    /**
+     * Changes an authenticated user's password in the database.
+     * Verifies the current password, validates length, hashes with bcrypt,
+     * updates users.password_hash, increments token_version, and records an activity log.
+     */
+    public function changePassword($userId, $currentPassword, $newPassword) {
+        if (empty($currentPassword) || empty($newPassword)) {
+            return ['success' => false, 'message' => 'Current password and new password are required.'];
+        }
+
+        if (strlen($newPassword) < 6) {
+            return ['success' => false, 'message' => 'New password must be at least 6 characters long.'];
+        }
+
+        $user = $this->userRepo->findById($userId);
+        if (!$user) {
+            return ['success' => false, 'message' => 'User not found.'];
+        }
+
+        if (!password_verify($currentPassword, $user['password_hash'])) {
+            return ['success' => false, 'message' => 'Current password is incorrect.'];
+        }
+
+        if (password_verify($newPassword, $user['password_hash'])) {
+            return ['success' => false, 'message' => 'New password cannot be the same as your current password.'];
+        }
+
+        try {
+            $this->conn->beginTransaction();
+
+            $newPasswordHash = password_hash($newPassword, PASSWORD_DEFAULT);
+            $this->userRepo->updatePasswordHash($userId, $newPasswordHash);
+
+            // Invalidate existing sessions by incrementing token_version
+            $stmt = $this->conn->prepare("UPDATE users SET token_version = token_version + 1 WHERE id = ?");
+            $stmt->execute([$userId]);
+
+            // Log event to activity_logs
+            $logStmt = $this->conn->prepare("INSERT INTO activity_logs (user_id, room_id, type, title, message) VALUES (?, ?, 'auth', 'Password Changed', 'User changed their account password.')");
+            $logStmt->execute([$userId, $user['room_id'] ?? null]);
+
+            $this->conn->commit();
+            return ['success' => true, 'message' => 'Password updated successfully.'];
+        } catch (Exception $e) {
+            if ($this->conn->inTransaction()) {
+                $this->conn->rollBack();
+            }
+            return ['success' => false, 'message' => 'Failed to update password.'];
+        }
+    }
 }
+

@@ -126,6 +126,25 @@ class AuthController {
         ResponseHelper::sendRaw($result);
     }
 
+    public function changePassword($authenticatedUser, $data) {
+        if (!$authenticatedUser) {
+            ResponseHelper::error("Unauthorized", 401);
+            return;
+        }
+
+        $currentPassword = $data['currentPassword'] ?? '';
+        $newPassword = $data['newPassword'] ?? '';
+
+        if (empty($currentPassword) || empty($newPassword)) {
+            ResponseHelper::error("Current password and new password are required", 400);
+            return;
+        }
+
+        $result = $this->authService->changePassword($authenticatedUser['id'], $currentPassword, $newPassword);
+        ResponseHelper::sendRaw($result);
+    }
+
+
     public function testEmailDelivery($data) {
         $email = $data['email'] ?? '';
         if (empty($email) || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
