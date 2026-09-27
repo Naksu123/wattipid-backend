@@ -20,7 +20,7 @@ class IoTService {
     const MIN_REALISTIC_VOLTAGE = 100;        
     const MAX_REALISTIC_CURRENT = 25;         
     const MAX_ENERGY_DELTA = 0.05;            // Max kWh delta per reading (0.05 kWh = 36000W over 5s). Blocks fake jumps!
-    const MIN_LOG_INTERVAL_SECONDS = 0;       // Minimum seconds between logs (anti-spam) - Disabled for instant realtime
+    const MIN_LOG_INTERVAL_SECONDS = 2;       // Minimum seconds between DB inserts (prevents telemetry flooding)
 
     public function __construct($dbConnection) {
         $this->conn = $dbConnection;

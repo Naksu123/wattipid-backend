@@ -16,7 +16,7 @@ class AuthMiddleware {
      */
     public function handle() {
         $authHeader = '';
-        $headers = getallheaders();
+        $headers = function_exists('getallheaders') ? getallheaders() : [];
         if ($headers) {
             foreach ($headers as $key => $value) {
                 if (strtolower($key) === 'authorization' || strtolower($key) === 'x-authorization') {

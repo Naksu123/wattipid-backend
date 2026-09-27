@@ -30,7 +30,7 @@ class IoTMiddleware {
             return true;
         }
 
-        $headers = getallheaders();
+        $headers = function_exists('getallheaders') ? getallheaders() : [];
         // Handle case-insensitive headers
         $roomId = $headers['X-Wattipid-RoomID'] ?? $headers['x-wattipid-roomid'] ?? null;
         $timestamp = $headers['X-Wattipid-Timestamp'] ?? $headers['x-wattipid-timestamp'] ?? null;

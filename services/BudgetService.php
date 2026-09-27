@@ -27,8 +27,8 @@ class BudgetService {
             
             if ($pastRow) {
                 // Auto-rollover this budget for the current month
-                $insertStmt = $this->conn->prepare("INSERT INTO budget_settings (room_id, monthly_budget, daily_allowance, weekly_allowance, month, year) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE monthly_budget = VALUES(monthly_budget), daily_allowance = VALUES(daily_allowance), weekly_allowance = VALUES(weekly_allowance)");
-                $insertStmt->execute([$roomId, $pastRow['monthly_budget'], $pastRow['daily_allowance'], $pastRow['weekly_allowance'], $month, $year]);
+                $insertStmt = $this->conn->prepare("INSERT INTO budget_settings (room_id, monthly_budget, daily_allowance, weekly_allowance, month, year) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE monthly_budget = ?, daily_allowance = ?, weekly_allowance = ?");
+                $insertStmt->execute([$roomId, $pastRow['monthly_budget'], $pastRow['daily_allowance'], $pastRow['weekly_allowance'], $month, $year, $pastRow['monthly_budget'], $pastRow['daily_allowance'], $pastRow['weekly_allowance']]);
                 
                 // Fetch the newly inserted row
                 $stmt->execute([$roomId, $month, $year]);
@@ -60,8 +60,8 @@ class BudgetService {
         $daily = $dailyAllowance ?? ($monthlyBudget / $daysInMonth);
         $weekly = $weeklyAllowance ?? ($monthlyBudget / ($daysInMonth / 7));
 
-        $stmt = $this->conn->prepare("INSERT INTO budget_settings (room_id, monthly_budget, daily_allowance, weekly_allowance, month, year) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE monthly_budget = VALUES(monthly_budget), daily_allowance = VALUES(daily_allowance), weekly_allowance = VALUES(weekly_allowance)");
-        $stmt->execute([$roomId, $monthlyBudget, $daily, $weekly, $month, $year]);
+        $stmt = $this->conn->prepare("INSERT INTO budget_settings (room_id, monthly_budget, daily_allowance, weekly_allowance, month, year) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE monthly_budget = ?, daily_allowance = ?, weekly_allowance = ?");
+        $stmt->execute([$roomId, $monthlyBudget, $daily, $weekly, $month, $year, $monthlyBudget, $daily, $weekly]);
 
         return [
             'success' => true,

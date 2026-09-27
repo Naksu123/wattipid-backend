@@ -26,13 +26,16 @@ class ForecastEngine {
         $daysInMonth = (int) $now->format('t');
         $daysRemaining = $daysInMonth - $dayOfMonth;
 
-        // Get current month's total consumption so far
-        $current = $this->getMonthTotal($roomId, $year, $month, $tenantName);
-        $currentCost = (float) ($current['totalCost'] ?? 0);
-        $currentEnergy = (float) ($current['totalEnergy'] ?? 0);
-
         // Get daily breakdown for trend analysis
         $dailyData = $this->getDailyTotals($roomId, $year, $month, $tenantName);
+
+        // Derive current month's total consumption directly from dailyData (avoids redundant full table scan)
+        $currentCost = 0.0;
+        $currentEnergy = 0.0;
+        foreach ($dailyData as $d) {
+            $currentCost += (float) ($d['dailyCost'] ?? 0);
+            $currentEnergy += (float) ($d['dailyEnergy'] ?? 0);
+        }
         
         // Get last month's data for comparison
         $lastMonth = $month === 1 ? 12 : $month - 1;
@@ -171,55 +174,103 @@ class ForecastEngine {
     // ---- PRIVATE HELPERS ----
 
     private function getMonthTotal($roomId, $year, $month, $tenantName = null) {
+        $startDate = sprintf("%04d-%02d-01", $year, $month);
+        $endDate = date('Y-m-d', strtotime("$startDate +1 month"));
         $where = $tenantName ? "tenant_name = ?" : "room_id = ?";
         $param = $tenantName ?: $roomId;
 
-        $startDate = "$year-" . str_pad($month, 2, '0', STR_PAD_LEFT) . "-01 00:00:00";
+        // Check pre-aggregated daily table first
+        try {
+            $stmt = $this->conn->prepare("
+                SELECT SUM(total_energy) as totalEnergy, SUM(total_cost) as totalCost
+                FROM consumption_daily
+                WHERE $where AND log_date >= ? AND log_date < ?
+            ");
+            $stmt->execute([$param, $startDate, $endDate]);
+            $res = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($res && $res['totalEnergy'] !== null) {
+                return [
+                    'totalEnergy' => (float)$res['totalEnergy'],
+                    'totalCost' => (float)$res['totalCost']
+                ];
+            }
+        } catch (Throwable $e) {}
+
+        // Fallback to raw logs
         $stmt = $this->conn->prepare("
             SELECT SUM(energy) as totalEnergy, SUM(cost) as totalCost
             FROM consumption_logs
             WHERE $where 
             AND timestamp >= ? 
-            AND timestamp < DATE_ADD(?, INTERVAL 1 MONTH)
+            AND timestamp < ?
         ");
-        $stmt->execute([$param, $startDate, $startDate]);
+        $stmt->execute([$param, "$startDate 00:00:00", "$endDate 00:00:00"]);
         return $stmt->fetch(PDO::FETCH_ASSOC) ?: ['totalEnergy' => 0, 'totalCost' => 0];
     }
 
     private function getDailyTotals($roomId, $year, $month, $tenantName = null) {
+        $startDate = sprintf("%04d-%02d-01", $year, $month);
+        $endDate = date('Y-m-d', strtotime("$startDate +1 month"));
         $where = $tenantName ? "tenant_name = ?" : "room_id = ?";
         $param = $tenantName ?: $roomId;
 
-        $startDate = "$year-" . str_pad($month, 2, '0', STR_PAD_LEFT) . "-01 00:00:00";
+        $dailyMap = [];
+
+        // 1. Fetch pre-aggregated historical days from consumption_daily
+        try {
+            $stmt = $this->conn->prepare("
+                SELECT log_date as day, total_cost as dailyCost, total_energy as dailyEnergy
+                FROM consumption_daily
+                WHERE $where AND log_date >= ? AND log_date < ?
+                ORDER BY log_date ASC
+            ");
+            $stmt->execute([$param, $startDate, $endDate]);
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $dailyMap[$row['day']] = [
+                    'day' => $row['day'],
+                    'dailyCost' => (float)$row['dailyCost'],
+                    'dailyEnergy' => (float)$row['dailyEnergy']
+                ];
+            }
+        } catch (Throwable $t) {}
+
+        // 2. Fetch live unaggregated days (e.g. today or days not in consumption_daily)
+        $minLiveDate = !empty($dailyMap) ? date('Y-m-d') : $startDate;
         $stmt = $this->conn->prepare("
             SELECT DATE(timestamp) as day, SUM(cost) as dailyCost, SUM(energy) as dailyEnergy
             FROM consumption_logs
             WHERE $where 
             AND timestamp >= ? 
-            AND timestamp < DATE_ADD(?, INTERVAL 1 MONTH)
+            AND timestamp < ?
             GROUP BY DATE(timestamp)
             ORDER BY day ASC
         ");
-        $stmt->execute([$param, $startDate, $startDate]);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $stmt->execute([$param, "$minLiveDate 00:00:00", "$endDate 00:00:00"]);
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $day = $row['day'];
+            $dailyMap[$day] = [
+                'day' => $day,
+                'dailyCost' => (float)$row['dailyCost'],
+                'dailyEnergy' => (float)$row['dailyEnergy']
+            ];
+        }
+
+        ksort($dailyMap);
+        return array_values($dailyMap);
     }
 
     private function getLast7DayAverage($roomId, $tenantName = null) {
-        $where = $tenantName ? "tenant_name = ?" : "room_id = ?";
-        $param = $tenantName ?: $roomId;
+        $where = $tenantName ? "(room_id = ? OR tenant_name = ?)" : "room_id = ?";
+        $params = $tenantName ? [$roomId, $tenantName] : [$roomId];
 
         $stmt = $this->conn->prepare("
             SELECT 
-                AVG(daily_cost) as avgDailyCost,
-                AVG(daily_energy) as avgDailyEnergy
-            FROM (
-                SELECT DATE(timestamp) as dt, SUM(cost) as daily_cost, SUM(energy) as daily_energy
-                FROM consumption_logs
-                WHERE $where AND timestamp >= DATE_SUB(NOW(), INTERVAL 7 DAY)
-                GROUP BY DATE(timestamp)
-            ) as daily_totals
+                ROUND(SUM(cost) / GREATEST(1, COUNT(DISTINCT DATE(timestamp))), 4) as avgDailyCost,
+                ROUND(SUM(energy) / GREATEST(1, COUNT(DISTINCT DATE(timestamp))), 4) as avgDailyEnergy
+            FROM consumption_logs
+            WHERE $where AND timestamp >= DATE_SUB(NOW(), INTERVAL 7 DAY)
         ");
-        $stmt->execute([$param]);
+        $stmt->execute($params);
         return $stmt->fetch(PDO::FETCH_ASSOC) ?: ['avgDailyCost' => 0, 'avgDailyEnergy' => 0];
     }
 

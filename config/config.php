@@ -4,6 +4,23 @@
  */
 date_default_timezone_set('Asia/Manila');
 
+// CLI / Cron / FastCGI Compatibility Polyfill for getallheaders()
+if (!function_exists('getallheaders')) {
+    function getallheaders() {
+        $headers = [];
+        foreach ($_SERVER as $name => $value) {
+            if (substr($name, 0, 5) == 'HTTP_') {
+                $headers[str_replace(' ', '-', ucwords(strtolower(str_replace('_', ' ', substr($name, 5)))))] = $value;
+            } elseif ($name == 'CONTENT_TYPE') {
+                $headers['Content-Type'] = $value;
+            } elseif ($name == 'CONTENT_LENGTH') {
+                $headers['Content-Length'] = $value;
+            }
+        }
+        return $headers;
+    }
+}
+
 function loadEnv($path) {
     if (!file_exists($path)) return;
     $lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);

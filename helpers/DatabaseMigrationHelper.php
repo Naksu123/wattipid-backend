@@ -167,6 +167,32 @@ class DatabaseMigrationHelper {
                 }
             }
 
+            // 6. Ensure consumption_daily pre-aggregated summary table exists
+            $conn->exec("CREATE TABLE IF NOT EXISTS consumption_daily (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                room_id VARCHAR(50) NOT NULL,
+                tenant_name VARCHAR(255) NULL,
+                log_date DATE NOT NULL,
+                total_energy DECIMAL(12,4) NOT NULL DEFAULT 0.0000,
+                total_cost DECIMAL(10,4) NOT NULL DEFAULT 0.0000,
+                UNIQUE KEY uq_room_date (room_id, log_date),
+                INDEX idx_tenant_date (tenant_name, log_date)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+            try {
+                $checkDaily = $conn->query("SELECT MAX(log_date) as last_day FROM consumption_daily")->fetch();
+                $lastDay = $checkDaily['last_day'] ?? null;
+                if (!$lastDay) {
+                    $conn->exec("
+                        INSERT IGNORE INTO consumption_daily (room_id, tenant_name, log_date, total_energy, total_cost)
+                        SELECT room_id, tenant_name, DATE(timestamp), ROUND(SUM(energy), 4), ROUND(SUM(cost), 4)
+                        FROM consumption_logs
+                        WHERE timestamp < CURDATE()
+                        GROUP BY room_id, DATE(timestamp)
+                    ");
+                }
+            } catch (Throwable $t) {}
+
             self::$migrated = true;
         } catch (Throwable $e) {
             error_log("[DatabaseMigrationHelper] Error ensuring schema: " . $e->getMessage());

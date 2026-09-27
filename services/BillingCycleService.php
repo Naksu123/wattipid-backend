@@ -268,27 +268,25 @@ class BillingCycleService {
 
         $kwh = (float)($usage['totalEnergy'] ?? 0);
         
-        $rateQuery = $this->db->query("SELECT setting_value FROM settings WHERE setting_key = 'rate_per_kwh'");
-        $globalRate = $rateQuery->fetchColumn() ?: 12.50;
-
-        $roomQuery = $this->db->prepare("SELECT utility_rate, monthly_rent FROM rooms WHERE room_id = ?");
-        $roomQuery->execute([$roomId]);
-        $roomInfo = $roomQuery->fetch(PDO::FETCH_ASSOC);
-
-        $rate = (!empty($roomInfo['utility_rate']) && $roomInfo['utility_rate'] > 0) ? (float)$roomInfo['utility_rate'] : (float)$globalRate;
-
-        $electricityCharge = round($kwh * $rate, 2);
-
-        // 3. Fetch active cycle details for mid-month fees
-        $cycleQuery = $this->db->prepare("SELECT * FROM billing_cycles WHERE id = ?");
+        // 2. Fetch active cycle details, room rates, and rent in a single combined query
+        $cycleQuery = $this->db->prepare("
+            SELECT bc.*, r.utility_rate, r.monthly_rent,
+                   COALESCE(NULLIF(r.utility_rate, 0), (SELECT setting_value FROM settings WHERE setting_key = 'rate_per_kwh' LIMIT 1), 12.50) as effective_rate
+            FROM billing_cycles bc
+            LEFT JOIN rooms r ON bc.room_id = r.room_id
+            WHERE bc.id = ?
+        ");
         $cycleQuery->execute([$activeCycleId]);
         $activeCycle = $cycleQuery->fetch(PDO::FETCH_ASSOC);
+
+        $rate = (float)($activeCycle['effective_rate'] ?? 12.50);
+        $rent = (float)($activeCycle['monthly_rent'] ?? 0.00);
+        $electricityCharge = round($kwh * $rate, 2);
 
         $additionalCharges = (float)($activeCycle['additional_charges'] ?? 0);
         $penalty = (float)($activeCycle['penalty_amount'] ?? 0);
         $discounts = (float)($activeCycle['discounts'] ?? 0);
         $previousBalance = (float)($activeCycle['previous_balance'] ?? 0);
-        $rent = (float)($roomInfo['monthly_rent'] ?? 0);
 
         // Add 2% miscellaneous fee for live bill consistency
         $miscellaneousFee = round($electricityCharge * 0.02, 2);

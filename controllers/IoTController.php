@@ -46,9 +46,30 @@ class IoTController {
     }
 
     public function getLatestConsumption($user, $data) {
+        if (!$user) {
+            ResponseHelper::error("Unauthorized: Authentication required", 401);
+        }
+
         $roomId = $data['roomId'] ?? null;
         if (!$roomId) {
             ResponseHelper::error("Room ID is required", 400);
+        }
+
+        // Validate room exists
+        $stmtRoom = $this->conn->prepare("SELECT room_id FROM rooms WHERE room_id = ? LIMIT 1");
+        $stmtRoom->execute([$roomId]);
+        if (!$stmtRoom->fetch()) {
+            ResponseHelper::error("Room not found", 404);
+        }
+
+        // Role & Room Authorization: Tenants may only view their assigned room; Landlords can view building rooms
+        if ($user['role'] === 'tenant') {
+            $tenantRoomId = $user['room_id'] ?? null;
+            if (!$tenantRoomId || $tenantRoomId !== $roomId) {
+                ResponseHelper::error("Forbidden: You can only access your assigned room.", 403);
+            }
+        } elseif ($user['role'] !== 'landlord') {
+            ResponseHelper::error("Forbidden: Invalid user role.", 403);
         }
 
         // Direct query to get ALL sensor columns from the latest log
