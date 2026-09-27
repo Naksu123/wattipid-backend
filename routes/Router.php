@@ -14,6 +14,7 @@ require_once __DIR__ . '/../controllers/AuditController.php';
 require_once __DIR__ . '/../controllers/SyncController.php';
 require_once __DIR__ . '/../controllers/TermsController.php';
 require_once __DIR__ . '/../middlewares/IoTMiddleware.php';
+require_once __DIR__ . '/../helpers/ResponseHelper.php';
 
 class Router {
     /** @var AuthController */

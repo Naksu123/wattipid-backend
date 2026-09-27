@@ -4,7 +4,9 @@ require_once __DIR__ . '/../services/DashboardSyncService.php';
 require_once __DIR__ . '/../helpers/ResponseHelper.php';
 
 class DashboardController {
+    /** @var DashboardService */
     private $dashboardService;
+    /** @var DashboardSyncService */
     private $syncService;
 
     public function __construct($dbConnection) {

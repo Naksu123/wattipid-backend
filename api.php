@@ -13,7 +13,7 @@ ob_start();
 
 // 2. Production Error Reporting (Log to file, hide from client)
 require_once __DIR__ . '/config/config.php';
-define('DEBUG_MODE', ENVIRONMENT === 'development');
+define('DEBUG_MODE', (defined('ENVIRONMENT') ? constant('ENVIRONMENT') : config('APP_ENV', 'development')) === 'development');
 ini_set('display_errors', DEBUG_MODE ? 1 : 0);
 ini_set('log_errors', 1);
 error_reporting(E_ALL);
@@ -63,12 +63,15 @@ set_exception_handler(function ($e) {
     sendJsonError("Server Error: " . $e->getMessage(), 500, $e->getTraceAsString());
 });
 
-try {
-    require_once __DIR__ . '/config/config.php';
-    require_once __DIR__ . '/config/db.php';
-    require_once __DIR__ . '/helpers/ResponseHelper.php';
-    require_once __DIR__ . '/routes/Router.php';
+require_once __DIR__ . '/config/db.php';
+require_once __DIR__ . '/helpers/ResponseHelper.php';
+require_once __DIR__ . '/utils/SecurityMiddleware.php';
+require_once __DIR__ . '/middlewares/AuthMiddleware.php';
+require_once __DIR__ . '/services/PenaltyService.php';
+require_once __DIR__ . '/services/BillingNotificationService.php';
+require_once __DIR__ . '/routes/Router.php';
 
+try {
     // Set JSON headers
     header('Content-Type: application/json');
     header("Access-Control-Allow-Methods: POST, GET, OPTIONS");
@@ -85,7 +88,6 @@ try {
     $data = json_decode($json, true) ?? [];
     
     // Phase 6: Security Hardening (Rate Limiting & Sanitization)
-    require_once __DIR__ . '/utils/SecurityMiddleware.php';
     $action = $data['action'] ?? $_GET['action'] ?? '';
     
     // Apply Rate Limiting
@@ -100,8 +102,8 @@ try {
     $publicActions = ['login', 'register', 'verifyOTP', 'refreshToken', 'requestPasswordReset', 'verifyResetOTP', 'resetPassword', 'sendVerificationCode', 'resendVerificationCode', 'getTenantInvitationByEmail', 'verifyAccessCode', 'logConsumption', 'getLatestConsumption', 'getActiveTerms'];
     
     $authenticatedUser = null;
-    require_once __DIR__ . '/middlewares/AuthMiddleware.php';
-    $auth = new AuthMiddleware(SECRET_KEY, $conn);
+    $authSecret = defined('SECRET_KEY') ? constant('SECRET_KEY') : config('SECRET_KEY', 'default_fallback_key_change_me');
+    $auth = new AuthMiddleware($authSecret, $conn);
     
     if (!in_array($action, $publicActions)) {
         $authenticatedUser = $auth->handle();
@@ -111,7 +113,6 @@ try {
     // Triggers for landlords or whenever any user accesses billing / payment actions
     $billingActions = ['getTenantBillingOverview', 'getAvailableBillingCycles', 'getBillingHistory', 'syncState'];
     if ($authenticatedUser && ($authenticatedUser['role'] === 'landlord' || in_array($action, $billingActions))) {
-        require_once __DIR__ . '/services/PenaltyService.php';
         $penaltySvc = new PenaltyService($conn);
         // calculateDailyPenalties() has a built-in cache check so it only runs once per day
         $penaltySvc->calculateDailyPenalties();
@@ -120,7 +121,6 @@ try {
     // Lazy Evaluation: Check billing notifications for tenants.
     // Fires budget threshold, due date, and overdue/penalty alerts with built-in cooldowns.
     if ($authenticatedUser && $authenticatedUser['role'] === 'tenant' && $authenticatedUser['room_id']) {
-        require_once __DIR__ . '/services/BillingNotificationService.php';
         $billingNotifSvc = new BillingNotificationService($conn);
         $billingNotifSvc->checkAll($authenticatedUser['room_id'], $authenticatedUser['id']);
     }
