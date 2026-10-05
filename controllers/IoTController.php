@@ -32,17 +32,10 @@ class IoTController {
     }
 
     public function toggleRelay($user, $data) {
-        // SECURITY: Only landlords can remotely cut power
         if ($user['role'] !== 'landlord') {
             ResponseHelper::error("Unauthorized: Landlord access required", 403);
         }
-
-        if (empty($data['roomId']) || !isset($data['state'])) {
-            ResponseHelper::error("Missing Room ID or State", 400);
-        }
-
-        $result = $this->iotService->toggleRelay($data['roomId'], $data['state']);
-        ResponseHelper::send($result['success'], $result['message']);
+        ResponseHelper::error("Feature not supported: Relay hardware is not available on the Wattipid submetering system.", 400);
     }
 
     public function getLatestConsumption($user, $data) {

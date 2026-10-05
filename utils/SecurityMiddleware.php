@@ -12,6 +12,9 @@ class SecurityMiddleware
      */
     public static function checkRateLimit($action)
     {
+        if ($action === 'health' || $action === 'ping') {
+            return true;
+        }
         $ip = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? 'unknown';
         $time = time();
         $key = "ratelimit_" . md5($ip . $action);

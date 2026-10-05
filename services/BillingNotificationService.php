@@ -340,16 +340,18 @@ class BillingNotificationService {
     // =========================================================
     // CHECK 4: Payment Verification Alerts (Real-time trigger)
     // =========================================================
-    public function sendPaymentVerificationAlert($roomId, $userId, $amountPaid, $status, $paymentMethod, $remainingBalance, $paymentData = []) {
+    public function sendPaymentVerificationAlert($roomId, $userId, $amountPaid, $status, $paymentMethod, $remainingBalance, $paymentData = [], $force = false) {
         $settings = $this->getPreferences($userId, $roomId);
         if (!$settings['notifications_enabled'] || !($settings['payment_alerts'] ?? true)) return false;
 
-        $isPartial = $status === 'partially_paid';
+        $isFullyPaid = ($status === 'paid' && $remainingBalance <= 0.00);
+        $isPartial = ($status === 'partially_paid' || ($status !== 'paid' && $remainingBalance > 0.00));
         
-        $title = $isPartial ? '💵 Partial Payment Verified' : 'Payment Verified';
+        $invoiceNum = $paymentData['invoiceNumber'] ?? 'N/A';
+        $title = $isPartial ? '💵 Partial Payment Verified' : 'Payment Confirmed — Account Fully Paid';
         $message = $isPartial 
             ? "Your partial payment of ₱" . number_format($amountPaid, 2) . " via " . strtoupper($paymentMethod) . " has been verified. Remaining balance: ₱" . number_format($remainingBalance, 2) . "."
-            : "Your payment has been reviewed and approved by your landlord. Your billing status has been updated to Paid.";
+            : "Your payment of ₱" . number_format($amountPaid, 2) . " has been verified. Invoice #{$invoiceNum} is now fully paid and settled.";
 
         $alert = [
             'type' => $isPartial ? 'payment_partial' : 'payment_verified',
@@ -360,7 +362,9 @@ class BillingNotificationService {
             'data' => [
                 'amount_paid' => $amountPaid,
                 'payment_method' => $paymentMethod,
-                'remaining_balance' => $remainingBalance
+                'remaining_balance' => $remainingBalance,
+                'invoice_number' => $invoiceNum,
+                'billing_cycle_id' => $paymentData['billingCycleId'] ?? null
             ]
         ];
 
@@ -382,20 +386,25 @@ class BillingNotificationService {
             if ($settings['push_enabled']) {
                 $pushAlert = $alert;
                 if (!$isPartial) {
-                    $pushAlert['title'] = "Payment Successfully Verified";
-                    $pushAlert['message'] = "Your payment has been accepted and marked as Paid. Tap to view payment details.";
+                    $pushAlert['title'] = "Payment Confirmed — Account Fully Paid";
+                    $pushAlert['message'] = "Your payment of ₱" . number_format($amountPaid, 2) . " has been accepted. Invoice #{$invoiceNum} is fully paid.";
                 }
                 $pushAlert['data']['url'] = '/(tenant)/billing-history';
                 $this->queuePush($userId, $pushAlert);
             }
 
             if (!empty($paymentData)) {
-                $userStmt = $this->conn->prepare("SELECT email FROM users WHERE id = ?");
-                $userStmt->execute([$userId]);
-                $tenantEmail = $userStmt->fetchColumn();
+                $tenantEmail = $paymentData['tenantEmail'] ?? null;
+                if (!$tenantEmail) {
+                    $userStmt = $this->conn->prepare("SELECT email FROM users WHERE id = ?");
+                    $userStmt->execute([$userId]);
+                    $tenantEmail = $userStmt->fetchColumn();
+                }
                 
-                if ($tenantEmail) {
-                    $this->queueVerificationEmail($tenantEmail, $amountPaid, $paymentData, $isPartial, $remainingBalance);
+                if ($tenantEmail && filter_var($tenantEmail, FILTER_VALIDATE_EMAIL)) {
+                    $this->queueVerificationEmail($tenantEmail, $amountPaid, $paymentData, $isPartial, $remainingBalance, $force);
+                } else {
+                    error_log("[BillingNotifSvc] Skipping email: No valid email found for tenant user ID {$userId}");
                 }
             }
 
@@ -409,70 +418,152 @@ class BillingNotificationService {
         }
     }
 
-    private function queueVerificationEmail($toEmail, $amountPaid, $paymentData, $isPartial = false, $remainingBalance = 0) {
-        $subject = $isPartial ? "Partial Payment Verified" : "Payment Successfully Verified";
-        
+    private function queueVerificationEmail($toEmail, $amountPaid, $paymentData, $isPartial = false, $remainingBalance = 0, $force = false) {
+        $cycleId = $paymentData['billingCycleId'] ?? null;
+        $isFullyPaid = (!$isPartial && $remainingBalance <= 0.00);
+
+        // IDEMPOTENCY CHECK: Prevent duplicate "Fully Paid" emails for the same settled billing cycle (unless explicitly forced)
+        if ($isFullyPaid && $cycleId && !$force) {
+            try {
+                $checkStmt = $this->conn->prepare(
+                    "SELECT id FROM email_logs WHERE type = 'payment_fully_paid' AND error_message = ? AND status = 'sent' LIMIT 1"
+                );
+                $checkStmt->execute(["cycle:{$cycleId}"]);
+                if ($checkStmt->fetchColumn()) {
+                    error_log("[BillingNotifSvc] Fully-paid email already sent for cycle {$cycleId}. Skipping duplicate.");
+                    return true;
+                }
+            } catch (Exception $checkEx) {
+                error_log("[BillingNotifSvc] Idempotency check error: " . $checkEx->getMessage());
+            }
+        }
+
         $tenantName = htmlspecialchars($paymentData['tenantName'] ?? 'Tenant');
         $roomNumber = htmlspecialchars($paymentData['roomNumber'] ?? 'N/A');
         $paymentMethod = htmlspecialchars($paymentData['paymentMethod'] ?? 'N/A');
         $refNumber = htmlspecialchars($paymentData['referenceNumber'] ?? 'N/A');
-        $dateSubmitted = htmlspecialchars($paymentData['dateSubmitted'] ?? date('Y-m-d'));
-        $dateVerified = htmlspecialchars(date('Y-m-d H:i:s'));
+        $invoiceNumber = htmlspecialchars($paymentData['invoiceNumber'] ?? 'N/A');
+        
+        $cycleStartStr = !empty($paymentData['cycleStart']) ? date('M d, Y', strtotime($paymentData['cycleStart'])) : '';
+        $cycleEndStr = !empty($paymentData['cycleEnd']) ? date('M d, Y', strtotime($paymentData['cycleEnd'])) : '';
+        $billingPeriod = ($cycleStartStr && $cycleEndStr) ? "{$cycleStartStr} – {$cycleEndStr}" : 'N/A';
+
+        $paymentDateStr = !empty($paymentData['paymentDate']) ? date('M d, Y', strtotime($paymentData['paymentDate'])) : date('M d, Y');
+        $dateVerifiedStr = !empty($paymentData['dateVerified']) ? date('M d, Y h:i A', strtotime($paymentData['dateVerified'])) : date('M d, Y h:i A');
         $verifiedBy = htmlspecialchars($paymentData['verifiedBy'] ?? 'Landlord');
         $amountFmt = number_format($amountPaid, 2);
         $remBalFmt = number_format($remainingBalance, 2);
-        
-        $statusText = $isPartial ? "PARTIALLY PAID" : "PAID";
-        $statusColor = $isPartial ? "#F59E0B" : "#10B981"; // Amber for partial, Green for full
-        $statusBg = $isPartial ? "#FEF3C7" : "#ECFDF5";
-        $headerColor = $isPartial ? "#F59E0B" : "#10B981";
-        
-        $statusMessage = $isPartial 
-            ? "Your partial payment has been applied. You still have a remaining balance of <strong>₱{$remBalFmt}</strong> for this billing period."
-            : "Your account has been updated successfully, and no outstanding balance remains for this billing period.";
+
+        if ($isFullyPaid) {
+            $subject = "Wattipid Payment Confirmed — Account Fully Paid";
+            $headerColor = "#10B981"; // Emerald Green
+            $statusText = "FULLY PAID / SETTLED";
+            $statusBg = "#ECFDF5";
+            $statusBorder = "#10B981";
+            $statusTextColor = "#065F46";
+            $statusMessage = "Your payment of <strong>₱{$amountFmt}</strong> has been verified. Invoice <strong>#{$invoiceNumber}</strong> is completely settled. No outstanding balance remains for this billing period, and no further penalties will accrue.";
+        } else {
+            $subject = "Partial Payment Verified - Wattipid";
+            $headerColor = "#F59E0B"; // Amber
+            $statusText = "PARTIALLY PAID";
+            $statusBg = "#FEF3C7";
+            $statusBorder = "#F59E0B";
+            $statusTextColor = "#92400E";
+            $statusMessage = "Your partial payment of <strong>₱{$amountFmt}</strong> has been applied. You still have a remaining balance of <strong>₱{$remBalFmt}</strong> for invoice <strong>#{$invoiceNumber}</strong>.";
+        }
 
         $htmlBody = "
-            <div style=\"font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;\">
-                <div style=\"background-color: {$headerColor}; padding: 20px; text-align: center;\">
-                    <h1 style=\"color: white; margin: 0; font-size: 24px;\">Your Payment Has Been Successfully Reviewed and Accepted</h1>
+            <div style=\"font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden;\">
+                <div style=\"background-color: {$headerColor}; padding: 24px; text-align: center;\">
+                    <h1 style=\"color: #ffffff; margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.5px;\">" . ($isFullyPaid ? "Payment Confirmed — Account Fully Paid" : "Partial Payment Verified") . "</h1>
                 </div>
-                <div style=\"padding: 20px; background-color: #f9fafb; border: 1px solid #e5e7eb;\">
-                    <p>Dear <strong>{$tenantName}</strong>,</p>
-                    <p>We are pleased to inform you that your recent payment has been reviewed and approved by your landlord.</p>
+                <div style=\"padding: 24px;\">
+                    <p style=\"font-size: 15px; color: #1f2937; margin-top: 0;\">Dear <strong>{$tenantName}</strong>,</p>
+                    <p style=\"font-size: 14px; color: #4b5563; line-height: 1.6;\">" . ($isFullyPaid 
+                        ? "We are pleased to inform you that your payment has been reviewed and accepted by your landlord. Your account for invoice <strong>#{$invoiceNumber}</strong> has been <strong>fully settled</strong>." 
+                        : "Your recent payment has been reviewed and approved by your landlord. A partial amount has been applied to invoice <strong>#{$invoiceNumber}</strong>.") . "</p>
                     
-                    <h3 style=\"color: #111827; border-bottom: 2px solid {$headerColor}; padding-bottom: 5px;\">Payment Details:</h3>
-                    <table style=\"width: 100%; border-collapse: collapse; margin-bottom: 20px;\">
-                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\"><strong>Tenant Name:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\">{$tenantName}</td></tr>
-                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\"><strong>Room Number:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\">{$roomNumber}</td></tr>
-                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\"><strong>Payment Method:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\">{$paymentMethod}</td></tr>
-                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\"><strong>Reference Number:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\">{$refNumber}</td></tr>
-                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\"><strong>Amount Paid:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: bold; color: {$headerColor};\">₱{$amountFmt}</td></tr>
-                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\"><strong>Date Submitted:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\">{$dateSubmitted}</td></tr>
-                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\"><strong>Date Verified:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\">{$dateVerified}</td></tr>
-                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\"><strong>Verified By:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #e5e7eb;\">{$verifiedBy}</td></tr>
+                    <div style=\"background-color: {$statusBg}; border-left: 4px solid {$statusBorder}; padding: 14px 16px; margin: 20px 0; border-radius: 4px;\">
+                        <div style=\"font-size: 14px; font-weight: 700; color: {$statusTextColor}; margin-bottom: 4px;\">Account Status: <span style=\"color: {$headerColor};\">{$statusText}</span></div>
+                        <div style=\"font-size: 13px; color: #374151; line-height: 1.5;\">{$statusMessage}</div>
+                    </div>
+
+                    <h3 style=\"color: #111827; font-size: 15px; border-bottom: 2px solid #f3f4f6; padding-bottom: 8px; margin-top: 24px; margin-bottom: 12px;\">Payment & Invoice Details</h3>
+                    <table style=\"width: 100%; border-collapse: collapse; font-size: 13px;\">
+                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #f3f4f6; color: #6b7280; width: 40%;\"><strong>Invoice Number:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #f3f4f6; font-weight: 600; color: #111827;\">{$invoiceNumber}</td></tr>
+                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #f3f4f6; color: #6b7280;\"><strong>Billing Period:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #f3f4f6; color: #111827;\">{$billingPeriod}</td></tr>
+                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #f3f4f6; color: #6b7280;\"><strong>Tenant Name:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #f3f4f6; color: #111827;\">{$tenantName}</td></tr>
+                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #f3f4f6; color: #6b7280;\"><strong>Room Number:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #f3f4f6; color: #111827;\">{$roomNumber}</td></tr>
+                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #f3f4f6; color: #6b7280;\"><strong>Payment Method:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #f3f4f6; color: #111827;\">{$paymentMethod}</td></tr>
+                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #f3f4f6; color: #6b7280;\"><strong>Reference Number:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #f3f4f6; color: #111827;\">{$refNumber}</td></tr>
+                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #f3f4f6; color: #6b7280;\"><strong>Paid Amount:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #f3f4f6; font-weight: 700; color: {$headerColor}; font-size: 15px;\">₱{$amountFmt}</td></tr>
+                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #f3f4f6; color: #6b7280;\"><strong>Payment Date:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #f3f4f6; color: #111827;\">{$paymentDateStr}</td></tr>
+                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #f3f4f6; color: #6b7280;\"><strong>Verification Date:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #f3f4f6; color: #111827;\">{$dateVerifiedStr}</td></tr>
+                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #f3f4f6; color: #6b7280;\"><strong>Verified By:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #f3f4f6; color: #111827;\">{$verifiedBy}</td></tr>
+                        <tr><td style=\"padding: 8px 0; border-bottom: 1px solid #f3f4f6; color: #6b7280;\"><strong>Remaining Balance:</strong></td><td style=\"padding: 8px 0; border-bottom: 1px solid #f3f4f6; font-weight: 700; color: " . ($isFullyPaid ? "#10B981" : "#EF4444") . "; font-size: 15px;\">₱" . ($isFullyPaid ? "0.00" : $remBalFmt) . "</td></tr>
                     </table>
                     
-                    <div style=\"background-color: {$statusBg}; padding: 15px; border-left: 4px solid {$headerColor}; margin-bottom: 20px;\">
-                        <h4 style=\"margin: 0 0 5px 0; color: #111827;\">Payment Status: <span style=\"font-size: 18px; color: {$headerColor};\">{$statusText}</span></h4>
-                        <p style=\"margin: 0; color: #4B5563;\">{$statusMessage}</p>
+                    <p style=\"font-size: 13px; color: #6b7280; line-height: 1.5; margin-top: 20px;\">" . ($isFullyPaid 
+                        ? "Your official paid invoice / receipt (PDF) is now available. You can view or download it anytime inside the Wattipid app under <strong>Billing History</strong>." 
+                        : "Please settle your remaining balance of ₱{$remBalFmt} before the due date to avoid overdue penalties.") . "</p>
+                    
+                    <div style=\"border-top: 1px solid #e5e7eb; padding-top: 16px; margin-top: 24px;\">
+                        <p style=\"margin: 0; font-size: 13px; color: #374151;\">Sincerely,</p>
+                        <p style=\"margin: 4px 0 0 0; font-size: 14px; font-weight: 600; color: #111827;\">Wattipid Smart Electricity Monitoring System</p>
+                        <p style=\"font-size: 11px; color: #9ca3af; margin-top: 12px; margin-bottom: 0;\">This is an automated notification. Please do not reply directly to this email.</p>
                     </div>
-                    
-                    <p>Thank you for completing your payment on time.</p>
-                    <p>If you have any questions regarding your billing statement, please contact your landlord through the Wattipid Smart Electricity Monitoring System.</p>
-                    
-                    <br>
-                    <p>Sincerely,</p>
-                    <p><strong>Wattipid Smart Electricity Monitoring System</strong></p>
-                    
-                    <p style=\"font-size: 11px; color: #6b7280; border-top: 1px solid #e5e7eb; padding-top: 10px; margin-top: 20px;\">This is an automated message generated by Wattipid. Please do not reply to this email.</p>
                 </div>
             </div>
         ";
-        
-        $textBody = "Payment Successfully Verified\n\nDear {$tenantName},\n\nWe are pleased to inform you that your recent payment of ₱{$amountFmt} via {$paymentMethod} has been reviewed and approved by your landlord.\n\nPayment Status: {$statusText}\n\n" . strip_tags($statusMessage) . "\n\nThank you for completing your payment on time.";
 
-        require_once __DIR__ . '/../utils/email_service.php';
-        sendEmail($toEmail, $tenantName, $subject, $htmlBody, $textBody, 'payment_verified');
+        $textBody = ($isFullyPaid ? "Wattipid Payment Confirmed — Account Fully Paid\n\n" : "Partial Payment Verified - Wattipid\n\n")
+            . "Dear {$tenantName},\n\n"
+            . ($isFullyPaid 
+                ? "Your payment of ₱{$amountFmt} via {$paymentMethod} has been approved by your landlord. Invoice #{$invoiceNumber} is completely settled. No outstanding balance remains." 
+                : "Your partial payment of ₱{$amountFmt} via {$paymentMethod} has been approved. Remaining balance: ₱{$remBalFmt}.") . "\n\n"
+            . "Invoice Number: {$invoiceNumber}\n"
+            . "Billing Period: {$billingPeriod}\n"
+            . "Tenant: {$tenantName}\n"
+            . "Room: {$roomNumber}\n"
+            . "Payment Method: {$paymentMethod}\n"
+            . "Reference: {$refNumber}\n"
+            . "Amount Paid: ₱{$amountFmt}\n"
+            . "Payment Date: {$paymentDateStr}\n"
+            . "Verification Date: {$dateVerifiedStr}\n"
+            . "Verified By: {$verifiedBy}\n"
+            . "Remaining Balance: ₱" . ($isFullyPaid ? "0.00" : $remBalFmt) . "\n\n"
+            . ($isFullyPaid 
+                ? "Your official paid invoice / receipt (PDF) is now available in the Wattipid app under Billing History.\n\n" 
+                : "")
+            . "Wattipid Smart Electricity Monitoring System";
+
+        $emailType = $isFullyPaid ? 'payment_fully_paid' : 'payment_partial';
+
+        try {
+            require_once __DIR__ . '/../utils/email_service.php';
+            $result = sendEmail($toEmail, $tenantName, $subject, $htmlBody, $textBody, $emailType);
+            
+            $success = !empty($result['success']);
+            $provider = $result['provider'] ?? (defined('EMAIL_PROVIDER') ? EMAIL_PROVIDER : 'smtp');
+            $refMarker = $success ? ($cycleId ? "cycle:{$cycleId}" : null) : ($result['message'] ?? 'Failed');
+
+            if (function_exists('logEmailDelivery')) {
+                logEmailDelivery($this->conn, $toEmail, $emailType, $success ? 'sent' : 'failed', $provider, $refMarker);
+            }
+
+            if ($success) {
+                error_log("[BillingNotifSvc] Email ({$emailType}) successfully delivered to {$toEmail} for cycle {$cycleId}");
+            } else {
+                error_log("[BillingNotifSvc] Email delivery failed to {$toEmail}: " . ($result['message'] ?? 'Unknown error'));
+            }
+            return $success;
+        } catch (Throwable $mailEx) {
+            error_log("[BillingNotifSvc] Exception during verification email delivery: " . $mailEx->getMessage());
+            if (function_exists('logEmailDelivery')) {
+                logEmailDelivery($this->conn, $toEmail, $emailType, 'failed', defined('EMAIL_PROVIDER') ? EMAIL_PROVIDER : 'smtp', $mailEx->getMessage());
+            }
+            return false;
+        }
     }
 
     public function sendPaymentRejectionAlert($roomId, $userId, $amount, $reason) {

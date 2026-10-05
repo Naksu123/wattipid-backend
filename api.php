@@ -99,7 +99,7 @@ try {
     $data = SecurityMiddleware::sanitizeInput($data);
 
     // Auth Middleware (Only enforce if not a public action)
-    $publicActions = ['login', 'register', 'verifyOTP', 'refreshToken', 'requestPasswordReset', 'verifyResetOTP', 'resetPassword', 'sendVerificationCode', 'resendVerificationCode', 'getTenantInvitationByEmail', 'verifyAccessCode', 'logConsumption', 'getActiveTerms'];
+    $publicActions = ['login', 'register', 'verifyOTP', 'refreshToken', 'requestPasswordReset', 'verifyResetOTP', 'resetPassword', 'sendVerificationCode', 'resendVerificationCode', 'getTenantInvitationByEmail', 'verifyAccessCode', 'logConsumption', 'getActiveTerms', 'health', 'ping'];
     
     $authenticatedUser = null;
     $authSecret = defined('SECRET_KEY') ? constant('SECRET_KEY') : config('SECRET_KEY', 'default_fallback_key_change_me');

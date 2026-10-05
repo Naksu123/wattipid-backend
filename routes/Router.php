@@ -444,6 +444,16 @@ class Router {
                 $this->syncController->syncState($authenticatedUser, $data);
                 return true;
 
+            // HEALTH / CONNECTIVITY
+            case 'health':
+            case 'ping':
+                ResponseHelper::success([
+                    'status' => 'healthy',
+                    'timestamp' => date('Y-m-d H:i:s'),
+                    'server' => 'wattipid_backend'
+                ]);
+                return true;
+
             default:
                 echo json_encode(["success" => false, "message" => "Unknown action", "action" => $action]);
                 return false;

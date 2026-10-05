@@ -349,6 +349,7 @@ class PaymentController {
                 throw new Exception("Payment not found or not in pending state");
             }
 
+            $committed = false;
             if ($actionType === 'approve') {
                 $actualAmount = isset($data['actual_amount']) ? (float)$data['actual_amount'] : (float)$payment['amount'];
 
@@ -359,19 +360,13 @@ class PaymentController {
                 $reconciled = $this->reconcileBillingCyclePayment($payment['billing_cycle_id']);
                 $newAmountPaid = $reconciled['verifiedPaid'];
                 $newStatus = $reconciled['newStatus'];
+                $standaloneTotal = $reconciled['standaloneTotal'];
+                $remainingBalance = $reconciled['remainingBalance'];
 
-                // Fetch billing cycle for notification calculations
+                // Fetch billing cycle for notification & invoice calculations
                 $stmt_bc = $this->db->prepare("SELECT * FROM billing_cycles WHERE id = ?");
                 $stmt_bc->execute([$payment['billing_cycle_id']]);
                 $bc = $stmt_bc->fetch(PDO::FETCH_ASSOC);
-
-                $grandTotal = (float)$bc['grand_total'];
-                if ($grandTotal == 0) {
-                     $grandTotal = (float)$bc['electricity_charge'] + (float)$bc['penalty_amount'] + (float)$bc['monthly_rent'] + (float)$bc['previous_balance'] + (float)$bc['additional_charges'] - (float)$bc['discounts'];
-                }
-                if ($grandTotal == 0) {
-                     $grandTotal = (float)$bc['total_cost'] + (float)$bc['penalty_amount'];
-                }
 
                 if ($newStatus === 'paid') {
                     // Auto-supersede any remaining duplicate pending payments for this cycle
@@ -381,25 +376,62 @@ class PaymentController {
 
                 $this->logAudit($authenticatedUser['id'], 'landlord', 'approve_payment', 'payments', $paymentId, 'pending', "verified (amount: $actualAmount, status: $newStatus)");
 
-                // Fetch tenant name for email template
-                $tenantStmt = $this->db->prepare("SELECT name FROM users WHERE id = ?");
+                // Always synchronize subsequent cycles' previous_balance for this room
+                $this->recalculateRoomPreviousBalances($payment['room_id']);
+
+                // Fetch tenant user for email template
+                $tenantStmt = $this->db->prepare("SELECT name, email FROM users WHERE id = ?");
                 $tenantStmt->execute([$payment['tenant_id']]);
-                $tenantName = $tenantStmt->fetchColumn() ?: 'Tenant';
+                $tenantUser = $tenantStmt->fetch(PDO::FETCH_ASSOC);
+                $tenantName = $tenantUser['name'] ?? ($bc['tenant_name'] ?? 'Tenant');
+                $tenantEmail = $tenantUser['email'] ?? '';
+
+                $invoiceNum = $bc['invoice_number'] ?: ('WT-' . date('Ym', strtotime($bc['cycle_start'] ?? 'now')) . '-' . $bc['id']);
 
                 $paymentData = [
                     'tenantName' => $tenantName,
+                    'tenantEmail' => $tenantEmail,
                     'roomNumber' => $payment['room_id'],
                     'paymentMethod' => $payment['payment_method'],
-                    'referenceNumber' => $payment['reference_number'],
+                    'referenceNumber' => $payment['reference_number'] ?: 'N/A',
                     'dateSubmitted' => $payment['payment_date'],
-                    'verifiedBy' => $authenticatedUser['name'] ?? 'Landlord'
+                    'paymentDate' => $payment['payment_date'],
+                    'dateVerified' => date('Y-m-d H:i:s'),
+                    'verifiedBy' => $authenticatedUser['name'] ?? 'Landlord',
+                    'invoiceNumber' => $invoiceNum,
+                    'billingCycleId' => $payment['billing_cycle_id'],
+                    'cycleStart' => $bc['cycle_start'] ?? null,
+                    'cycleEnd' => $bc['cycle_end'] ?? null,
+                    'dueDate' => $bc['due_date'] ?? null,
+                    'totalAmount' => $standaloneTotal,
+                    'remainingBalance' => $remainingBalance,
+                    'isOverdue' => (!empty($bc['due_date']) && strtotime($bc['due_date']) < time()),
+                    'isFullyPaid' => ($newStatus === 'paid' && $remainingBalance <= 0.00)
                 ];
 
-                // Send Real-time Notification
-                require_once __DIR__ . '/../services/BillingNotificationService.php';
-                $notifSvc = new BillingNotificationService($this->db);
-                $remainingBalance = max($grandTotal - $newAmountPaid, 0);
-                $notifSvc->sendPaymentVerificationAlert($payment['room_id'], $payment['tenant_id'], $actualAmount, $newStatus, $payment['payment_method'], $remainingBalance, $paymentData);
+                // COMMIT the database transaction FIRST
+                $this->db->commit();
+                $committed = true;
+
+                // POST-COMMIT: Trigger real-time notification and email (non-blocking)
+                try {
+                    require_once __DIR__ . '/../services/BillingNotificationService.php';
+                    $notifSvc = new BillingNotificationService($this->db);
+                    $notifSvc->sendPaymentVerificationAlert(
+                        $payment['room_id'],
+                        $payment['tenant_id'],
+                        $actualAmount,
+                        $newStatus,
+                        $payment['payment_method'],
+                        $remainingBalance,
+                        $paymentData
+                    );
+                } catch (Throwable $notifEx) {
+                    error_log("[PaymentController] Post-commit verification notification error: " . $notifEx->getMessage());
+                }
+
+                echo json_encode(["success" => true, "message" => "Payment successfully approved"]);
+                return;
             } else {
                 $stmt2 = $this->db->prepare("UPDATE payments SET status = 'rejected', verified_by = ?, rejection_reason = ? WHERE id = ?");
                 $stmt2->execute([$authenticatedUser['id'], $reason, $paymentId]);
@@ -409,19 +441,29 @@ class PaymentController {
 
                 $this->logAudit($authenticatedUser['id'], 'landlord', 'reject_payment', 'payments', $paymentId, 'pending', 'rejected: ' . $reason);
 
-                // Send Real-time Notification
-                require_once __DIR__ . '/../services/BillingNotificationService.php';
-                $notifSvc = new BillingNotificationService($this->db);
-                $notifSvc->sendPaymentRejectionAlert($payment['room_id'], $payment['tenant_id'], $payment['amount'], $reason);
+                // Always synchronize subsequent cycles' previous_balance for this room
+                $this->recalculateRoomPreviousBalances($payment['room_id']);
+
+                // COMMIT the database transaction FIRST
+                $this->db->commit();
+                $committed = true;
+
+                // POST-COMMIT: Trigger real-time rejection notification
+                try {
+                    require_once __DIR__ . '/../services/BillingNotificationService.php';
+                    $notifSvc = new BillingNotificationService($this->db);
+                    $notifSvc->sendPaymentRejectionAlert($payment['room_id'], $payment['tenant_id'], $payment['amount'], $reason);
+                } catch (Throwable $notifEx) {
+                    error_log("[PaymentController] Post-commit rejection notification error: " . $notifEx->getMessage());
+                }
+
+                echo json_encode(["success" => true, "message" => "Payment successfully rejected"]);
+                return;
             }
-
-            // Always synchronize subsequent cycles' previous_balance for this room
-            $this->recalculateRoomPreviousBalances($payment['room_id']);
-
-            $this->db->commit();
-            echo json_encode(["success" => true, "message" => "Payment successfully $actionType" . "d"]);
         } catch (Exception $e) {
-            $this->db->rollBack();
+            if (!$committed && $this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
             echo json_encode(["success" => false, "message" => "Failed to verify payment: " . $e->getMessage()]);
         }
     }
@@ -558,17 +600,79 @@ class PaymentController {
             $paymentId = $this->db->lastInsertId();
 
             // Reconcile billing cycle from verified payments (includes the new cash payment)
-            $this->reconcileBillingCyclePayment($billingCycleId);
+            $reconciled = $this->reconcileBillingCyclePayment($billingCycleId);
+            $newAmountPaid = $reconciled['verifiedPaid'];
+            $newStatus = $reconciled['newStatus'];
+            $standaloneTotal = $reconciled['standaloneTotal'];
+            $remainingBalance = $reconciled['remainingBalance'];
 
             // Recalculate room previous balances
             $this->recalculateRoomPreviousBalances($roomId);
 
             $this->logAudit($authenticatedUser['id'], 'landlord', 'offline_payment', 'payments', $paymentId, 'none', 'verified');
 
+            // COMMIT the financial transaction FIRST
             $this->db->commit();
+            $committed = true;
+
+            // POST-COMMIT: Trigger real-time notification & email if tenant exists
+            if ($tenantId) {
+                try {
+                    $stmt_bc = $this->db->prepare("SELECT * FROM billing_cycles WHERE id = ?");
+                    $stmt_bc->execute([$billingCycleId]);
+                    $bc = $stmt_bc->fetch(PDO::FETCH_ASSOC);
+
+                    $tenantStmt = $this->db->prepare("SELECT name, email FROM users WHERE id = ?");
+                    $tenantStmt->execute([$tenantId]);
+                    $tenantUser = $tenantStmt->fetch(PDO::FETCH_ASSOC);
+                    $tenantName = $tenantUser['name'] ?? ($bc['tenant_name'] ?? 'Tenant');
+                    $tenantEmail = $tenantUser['email'] ?? '';
+
+                    $invoiceNum = $bc['invoice_number'] ?: ('WT-' . date('Ym', strtotime($bc['cycle_start'] ?? 'now')) . '-' . $bc['id']);
+
+                    $paymentData = [
+                        'tenantName' => $tenantName,
+                        'tenantEmail' => $tenantEmail,
+                        'roomNumber' => $roomId,
+                        'paymentMethod' => 'Cash',
+                        'referenceNumber' => 'OFFLINE-CASH',
+                        'dateSubmitted' => date('Y-m-d H:i:s'),
+                        'paymentDate' => date('Y-m-d H:i:s'),
+                        'dateVerified' => date('Y-m-d H:i:s'),
+                        'verifiedBy' => $authenticatedUser['name'] ?? 'Landlord',
+                        'invoiceNumber' => $invoiceNum,
+                        'billingCycleId' => $billingCycleId,
+                        'cycleStart' => $bc['cycle_start'] ?? null,
+                        'cycleEnd' => $bc['cycle_end'] ?? null,
+                        'dueDate' => $bc['due_date'] ?? null,
+                        'totalAmount' => $standaloneTotal,
+                        'remainingBalance' => $remainingBalance,
+                        'isOverdue' => (!empty($bc['due_date']) && strtotime($bc['due_date']) < time()),
+                        'isFullyPaid' => ($newStatus === 'paid' && $remainingBalance <= 0.00)
+                    ];
+
+                    require_once __DIR__ . '/../services/BillingNotificationService.php';
+                    $notifSvc = new BillingNotificationService($this->db);
+                    $notifSvc->sendPaymentVerificationAlert(
+                        $roomId,
+                        $tenantId,
+                        $amount,
+                        $newStatus,
+                        'Cash',
+                        $remainingBalance,
+                        $paymentData
+                    );
+                } catch (Throwable $notifEx) {
+                    error_log("[PaymentController] Offline payment notification error: " . $notifEx->getMessage());
+                }
+            }
+
             echo json_encode(["success" => true, "message" => "Payment successfully recorded and verified as cash"]);
+            return;
         } catch (Exception $e) {
-            $this->db->rollBack();
+            if (!$committed && $this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
             echo json_encode(["success" => false, "message" => "Failed to process offline payment: " . $e->getMessage()]);
         }
     }
@@ -1045,7 +1149,7 @@ class PaymentController {
             $bc = $stmtCycle->fetch(PDO::FETCH_ASSOC);
 
             if (!$bc) {
-                return ['verifiedPaid' => 0, 'newStatus' => 'unpaid'];
+                return ['verifiedPaid' => 0, 'newStatus' => 'unpaid', 'standaloneTotal' => 0, 'remainingBalance' => 0];
             }
 
             // 4. Compute standalone cycle total (without previous_balance to avoid double-counting)
@@ -1057,9 +1161,12 @@ class PaymentController {
             $cPen = (float)($bc['penalty_amount'] ?? 0);
             $standaloneTotal = round($cElec + $cMisc + $cRent + $cAdd + $cPen - $cDisc, 2);
 
-            // 5. Determine new status
+            // 5. Determine new status & remaining balance
+            $remainingBalance = max(0.00, round($standaloneTotal - $verifiedPaid, 2));
+
             if ($standaloneTotal > 0 && $verifiedPaid >= $standaloneTotal - 0.01) {
                 $newStatus = 'paid';
+                $remainingBalance = 0.00;
             } elseif ($hasPending) {
                 $newStatus = 'pending_verification';
             } elseif ($verifiedPaid > 0.00) {
@@ -1078,10 +1185,15 @@ class PaymentController {
             $stmtUpdate = $this->db->prepare("UPDATE billing_cycles SET amount_paid = ?, payment_status = ? WHERE id = ?");
             $stmtUpdate->execute([$verifiedPaid, $newStatus, $cycleId]);
 
-            return ['verifiedPaid' => $verifiedPaid, 'newStatus' => $newStatus];
+            return [
+                'verifiedPaid' => $verifiedPaid,
+                'newStatus' => $newStatus,
+                'standaloneTotal' => $standaloneTotal,
+                'remainingBalance' => $remainingBalance
+            ];
         } catch (Exception $e) {
             error_log("[PaymentController] reconcileBillingCyclePayment error for cycle $cycleId: " . $e->getMessage());
-            return ['verifiedPaid' => 0, 'newStatus' => 'unpaid'];
+            return ['verifiedPaid' => 0, 'newStatus' => 'unpaid', 'standaloneTotal' => 0, 'remainingBalance' => 0];
         }
     }
 }

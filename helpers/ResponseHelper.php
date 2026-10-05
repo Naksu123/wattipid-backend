@@ -41,13 +41,12 @@ class ResponseHelper {
         
         $sanitizedResult = SecurityHelper::sanitize($result);
 
-        // Ensure the standard structure: success, message, error_code, data
-        $final = [
-            'success'    => $sanitizedResult['success'] ?? true,
-            'message'    => $sanitizedResult['message'] ?? 'Operation successful',
-            'error_code' => $sanitizedResult['error_code'] ?? null,
-            'data'       => $sanitizedResult['data'] ?? (isset($sanitizedResult['success']) ? null : $sanitizedResult)
-        ];
+        // Ensure standard structure while preserving custom payload fields (e.g. skipped, reason, delta)
+        $final = is_array($sanitizedResult) ? $sanitizedResult : [];
+        if (!isset($final['success'])) $final['success'] = true;
+        if (!isset($final['message'])) $final['message'] = ($final['success'] ? 'Operation successful' : 'Operation failed');
+        if (!isset($final['error_code'])) $final['error_code'] = null;
+        if (!isset($final['data'])) $final['data'] = null;
 
         echo json_encode($final);
         exit;

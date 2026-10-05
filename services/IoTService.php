@@ -86,21 +86,41 @@ class IoTService {
         $shouldRunEngine = !$lastLog || (time() - strtotime($lastLog['timestamp']) > 30);
 
         // --- Calculate Energy Delta & Cost ---
-        $lastCumulative = $lastLog ? (float) $lastLog['energy_cumulative'] : 0;
-        
-        // GHOST FIX: Handle C++ floating point noise. Only assume ESP32 restarted if it drops significantly (> 0.001 kWh)
-        if ($lastCumulative - $cumulativeEnergy > 0.001) {
-            $energyDelta = $cumulativeEnergy;
+        $lastCumulative = $lastLog ? (float) $lastLog['energy_cumulative'] : 0.0;
+        $timeElapsed = $lastLog ? max(1, abs(time() - strtotime($lastLog['timestamp']))) : 0;
+
+        if (!$lastLog) {
+            // First reading ever: establish baseline without billing prior hardware energy
+            $energyDelta = 0.0;
+        } elseif ($lastCumulative - $cumulativeEnergy > 0.001) {
+            // ESP32 restarted / NVS reset / flashed: counter rolled back.
+            // Establish new baseline. Never bill hardware's full cumulative counter!
+            $powerDelta = ($power > 0) ? ($power * (min($timeElapsed, 5) / 3600.0)) / 1000.0 : 0.0;
+            $energyDelta = min(self::MAX_ENERGY_DELTA, max(0.0, $powerDelta));
+            error_log("IoT Notice: ESP32 reboot/reset detected for {$roomId} (was: {$lastCumulative}, now: {$cumulativeEnergy}). Established new baseline. Delta: {$energyDelta}");
         } else {
-            $energyDelta = max(0, $cumulativeEnergy - $lastCumulative);
-        }
-        
-        // GHOST FIX: Safety cap for energy delta (prevents fake spikes)
-        if ($energyDelta > self::MAX_ENERGY_DELTA) {
-            error_log("IoT Safety Cap: Energy delta {$energyDelta} exceeds max " . self::MAX_ENERGY_DELTA . " for room {$roomId}");
-            $energyDelta = 0;
-            // Prevent the database from syncing to the ESP32's corrupted running total
-            $cumulativeEnergy = $lastCumulative;
+            // Normal advancing odometer
+            $rawDelta = max(0.0, $cumulativeEnergy - $lastCumulative);
+
+            // If power is 0 (load turned off), energy cannot increase
+            if ($power <= 0.01) {
+                $energyDelta = 0.0;
+            } else {
+                // Compute dynamic realistic limit based on physical max power (5000W) over actual elapsed time
+                $maxPossibleEnergy = (self::MAX_REALISTIC_POWER_WATTS / 1000.0) * (max(3, $timeElapsed) / 3600.0);
+                $maxAllowed = max(self::MAX_ENERGY_DELTA, $maxPossibleEnergy * 1.5);
+
+                if ($rawDelta <= $maxAllowed) {
+                    // Delta is physically realistic for elapsed time
+                    $energyDelta = $rawDelta;
+                } else {
+                    // Fall back to active power integration for this interval
+                    $powerDelta = ($power * (min($timeElapsed, 30) / 3600.0)) / 1000.0;
+                    $energyDelta = min($powerDelta, self::MAX_ENERGY_DELTA);
+                    error_log("IoT Safety: Extreme anomaly ({$rawDelta} kWh) rejected for {$roomId}. Used power-based delta: {$energyDelta} kWh.");
+                    $cumulativeEnergy = $lastCumulative + $energyDelta;
+                }
+            }
         }
 
         $rate = $this->getRatePerKwh($roomId);
@@ -226,19 +246,6 @@ class IoTService {
         }
     }
 
-    public function toggleRelay($roomId, $state) {
-        try {
-            $stmt = $this->conn->prepare("UPDATE rooms SET relay_state = ? WHERE room_id = ?");
-            $success = $stmt->execute([(int)$state, $roomId]);
-            
-            return [
-                'success' => $success,
-                'message' => $success ? "Relay " . ($state ? 'ON' : 'OFF') . " command sent to room $roomId." : "Failed to update relay state."
-            ];
-        } catch (Exception $e) {
-            return ['success' => false, 'message' => "Service Error: " . $e->getMessage()];
-        }
-    }
 
     private function getRatePerKwh($roomId) {
         $stmt = $this->conn->prepare("SELECT utility_rate FROM rooms WHERE room_id = ?");
