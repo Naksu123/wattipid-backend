@@ -176,24 +176,21 @@ class DashboardService
 
     private function getCycleBoundsForMonth($roomId, $year, $month)
     {
-        $stmt = $this->conn->prepare("SELECT cycle_start, cycle_end FROM billing_cycles WHERE room_id = ? AND YEAR(cycle_start) = ? AND MONTH(cycle_start) = ? ORDER BY id DESC LIMIT 1");
-        $stmt->execute([$roomId, $year, $month]);
-        $cycle = $stmt->fetch(PDO::FETCH_ASSOC);
-
-        if ($cycle) {
-            return [$cycle['cycle_start'], $cycle['cycle_end']];
-        }
-
         // Fallback calculation for cycles that haven't been created yet or legacy
         $stmtMoveIn = $this->conn->prepare("SELECT tenant_start_date FROM rooms WHERE room_id = ?");
         $stmtMoveIn->execute([$roomId]);
         $moveInDate = $stmtMoveIn->fetchColumn();
 
-        $startDay = $moveInDate ? sprintf('%02d', (int) date('d', strtotime($moveInDate))) : '01';
-        $reqDate = sprintf('%04d-%02d-%s 00:00:00', $year, $month, $startDay);
+        $startDay = $moveInDate ? (int) date('d', strtotime($moveInDate)) : 1;
 
-        $start = date('Y-m-d 00:00:00', strtotime("-1 month", strtotime($reqDate)));
-        $end = date('Y-m-d 00:00:00', strtotime($reqDate));
+        if ($startDay <= 1) {
+            $start = sprintf('%04d-%02d-01 00:00:00', $year, $month);
+            $end = date('Y-m-d 00:00:00', strtotime($start . ' +1 month'));
+        } else {
+            $endStr = sprintf('%04d-%02d-%02d 00:00:00', $year, $month, $startDay);
+            $end = date('Y-m-d 00:00:00', strtotime($endStr));
+            $start = date('Y-m-d 00:00:00', strtotime($end . ' -1 month'));
+        }
 
         return [$start, $end];
     }
@@ -202,35 +199,109 @@ class DashboardService
     {
         $id = $this->resolveIdentifier($roomId, $userId, $role);
 
-        $stmt = $this->conn->prepare("SELECT id FROM billing_cycles WHERE room_id = ? AND ( (YEAR(cycle_end) = ? AND MONTH(cycle_end) = ?) OR (YEAR(cycle_start) = ? AND MONTH(cycle_start) = ?) ) ORDER BY status ASC, id DESC LIMIT 1");
-        $stmt->execute([$id['value'], $year, $month, $year, $month]);
-        $cycleId = $stmt->fetchColumn();
+        $this->billingCycleService->advanceCycleIfNeeded($id['value']);
 
-        if ($cycleId) {
-            $liveBill = $this->billingCycleService->getLiveBillBreakdown($id['value'], $cycleId);
+        // 1. Primary match: billing cycle ending in this calendar month (authoritative monthly cycle)
+        $stmt = $this->conn->prepare("SELECT * FROM billing_cycles WHERE room_id = ? AND YEAR(cycle_end) = ? AND MONTH(cycle_end) = ? ORDER BY id DESC LIMIT 1");
+        $stmt->execute([$id['value'], $year, $month]);
+        $cycle = $stmt->fetch(PDO::FETCH_ASSOC);
 
-            return [
-                'success' => true,
-                'data' => [
-                    'totalEnergy' => $liveBill['consumptionKwh'],
-                    'totalCost' => $liveBill['electricityCharge'],
-                    'totalAmountDue' => $liveBill['totalAmountDue'],
-                    'liveBillTotal' => $liveBill['totalAmountDue'],
-                    'electricityCharge' => $liveBill['electricityCharge'],
-                    'additionalCharges' => $liveBill['additionalCharges'],
-                    'monthlyRent' => $liveBill['monthlyRent'],
-                    'previousBalance' => $liveBill['previousBalance'],
-                    'penalty' => $liveBill['penalty'],
-                    'discounts' => $liveBill['discounts'],
-                    'ratePerKwh' => $liveBill['ratePerKwh']
-                ]
-            ];
+        // 2. Secondary match (e.g., brand-new tenant whose first active cycle started in this month but ends next month)
+        if (!$cycle) {
+            $stmt = $this->conn->prepare("SELECT * FROM billing_cycles WHERE room_id = ? AND status = 'active' AND YEAR(cycle_start) = ? AND MONTH(cycle_start) = ? ORDER BY id DESC LIMIT 1");
+            $stmt->execute([$id['value'], $year, $month]);
+            $cycle = $stmt->fetch(PDO::FETCH_ASSOC);
+        }
+
+        if ($cycle) {
+            if ($cycle['status'] === 'completed') {
+                $energy = (float)($cycle['total_kwh'] ?? 0);
+                $cost = (float)($cycle['electricity_charge'] ?? $cycle['total_cost'] ?? 0);
+                $totalDue = (float)($cycle['grand_total'] ?? 0);
+                $rate = (float)($cycle['rate_per_kwh'] ?? 12.50);
+
+                if ($energy == 0) {
+                    $stmtLogs = $this->conn->prepare("SELECT COALESCE(SUM(energy), 0) as energy, COALESCE(SUM(cost), 0) as cost, COUNT(*) as cnt FROM consumption_logs WHERE billing_cycle_id = ?");
+                    $stmtLogs->execute([$cycle['id']]);
+                    $logUsage = $stmtLogs->fetch(PDO::FETCH_ASSOC);
+                    if (!empty($logUsage['cnt']) && $logUsage['cnt'] > 0) {
+                        $energy = (float)$logUsage['energy'];
+                        $cost = $cost > 0 ? $cost : (float)$logUsage['cost'];
+                    }
+                }
+
+                return [
+                    'success' => true,
+                    'data' => [
+                        'cycle_id' => (int)$cycle['id'],
+                        'cycle_start' => $cycle['cycle_start'],
+                        'cycle_end' => $cycle['cycle_end'],
+                        'totalEnergy' => $energy,
+                        'totalCost' => $cost,
+                        'totalAmountDue' => $totalDue,
+                        'liveBillTotal' => $totalDue,
+                        'electricityCharge' => $cost,
+                        'additionalCharges' => (float)($cycle['additional_charges'] ?? 0),
+                        'monthlyRent' => (float)($cycle['monthly_rent'] ?? 0),
+                        'previousBalance' => (float)($cycle['previous_balance'] ?? 0),
+                        'penalty' => (float)($cycle['penalty_amount'] ?? 0),
+                        'discounts' => (float)($cycle['discounts'] ?? 0),
+                        'ratePerKwh' => $rate,
+                        'hasData' => true,
+                        'status' => 'completed'
+                    ]
+                ];
+            } else {
+                $liveBill = $this->billingCycleService->getLiveBillBreakdown($id['value'], $cycle['id']);
+                
+                $stmtLogs = $this->conn->prepare("SELECT COUNT(*) FROM consumption_logs WHERE billing_cycle_id = ?");
+                $stmtLogs->execute([$cycle['id']]);
+                $cnt = (int)$stmtLogs->fetchColumn();
+
+                $energy = (float)($liveBill['consumptionKwh'] ?? 0);
+                $cost = (float)($liveBill['electricityCharge'] ?? 0);
+                $hasData = ($cnt > 0 || $energy > 0 || $cost > 0);
+
+                return [
+                    'success' => true,
+                    'data' => [
+                        'cycle_id' => (int)$cycle['id'],
+                        'cycle_start' => $liveBill['cycle_start'] ?? $cycle['cycle_start'],
+                        'cycle_end' => $liveBill['cycle_end'] ?? $cycle['cycle_end'],
+                        'totalEnergy' => $energy,
+                        'totalCost' => $cost,
+                        'totalAmountDue' => (float)($liveBill['totalAmountDue'] ?? 0),
+                        'liveBillTotal' => (float)($liveBill['totalAmountDue'] ?? 0),
+                        'electricityCharge' => $cost,
+                        'additionalCharges' => (float)($liveBill['additionalCharges'] ?? 0),
+                        'monthlyRent' => (float)($liveBill['monthlyRent'] ?? 0),
+                        'previousBalance' => (float)($liveBill['previousBalance'] ?? 0),
+                        'penalty' => (float)($liveBill['penalty'] ?? 0),
+                        'discounts' => (float)($liveBill['discounts'] ?? 0),
+                        'ratePerKwh' => (float)($liveBill['ratePerKwh'] ?? 12.50),
+                        'hasData' => $hasData,
+                        'status' => 'active'
+                    ]
+                ];
+            }
         }
 
         // Fallback for periods with no cycle
         list($start, $end) = $this->getCycleBoundsForMonth($id['value'], $year, $month);
         $data = $this->dashboardRepo->getTotalConsumption($id['column'], $id['value'], $start, $end);
-        return ['success' => true, 'data' => $this->recalculateCost($data, $id['value'])];
+        $recalculated = $this->recalculateCost($data, $id['value']);
+        $hasData = ((int)($data['entryCount'] ?? 0) > 0);
+
+        return [
+            'success' => true,
+            'data' => array_merge($recalculated, [
+                'cycle_id' => null,
+                'cycle_start' => $start,
+                'cycle_end' => $end,
+                'hasData' => $hasData,
+                'status' => 'no_cycle'
+            ])
+        ];
     }
 
     public function getHourlyBreakdown($roomId, $userId, $role, $dateStr = null)
@@ -325,8 +396,19 @@ class DashboardService
             $prevStart = date('Y-m-d 00:00:00', strtotime('-1 day'));
             $prevEnd = date('Y-m-d 00:00:00');
 
-            $currData = $this->dashboardRepo->getTotalConsumption($col, $val, $currStart, $currEnd);
-            $prevData = $this->dashboardRepo->getTotalConsumption($col, $val, $prevStart, $prevEnd);
+            $currRaw = $this->dashboardRepo->getTotalConsumption($col, $val, $currStart, $currEnd);
+            $prevRaw = $this->dashboardRepo->getTotalConsumption($col, $val, $prevStart, $prevEnd);
+
+            $currData = array_merge($this->recalculateCost($currRaw, $val), [
+                'start' => $currStart,
+                'end' => $currEnd,
+                'hasData' => ((int)($currRaw['entryCount'] ?? 0) > 0)
+            ]);
+            $prevData = array_merge($this->recalculateCost($prevRaw, $val), [
+                'start' => $prevStart,
+                'end' => $prevEnd,
+                'hasData' => ((int)($prevRaw['entryCount'] ?? 0) > 0)
+            ]);
         } elseif ($period === 'weekly') {
             $stmt = $this->conn->prepare("SELECT cycle_start FROM billing_cycles WHERE room_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1");
             $stmt->execute([$id['value']]);
@@ -343,43 +425,140 @@ class DashboardService
             $prevStart = date('Y-m-d 00:00:00', strtotime("-$offset days -7 days"));
             $prevEnd = date('Y-m-d 23:59:59', strtotime("-$offset days -1 day"));
 
-            $currData = $this->dashboardRepo->getTotalConsumption($col, $val, $currStart, $currEnd);
-            $prevData = $this->dashboardRepo->getTotalConsumption($col, $val, $prevStart, $prevEnd);
+            $currRaw = $this->dashboardRepo->getTotalConsumption($col, $val, $currStart, $currEnd);
+            $prevRaw = $this->dashboardRepo->getTotalConsumption($col, $val, $prevStart, $prevEnd);
+
+            $currData = array_merge($this->recalculateCost($currRaw, $val), [
+                'start' => $currStart,
+                'end' => $currEnd,
+                'hasData' => ((int)($currRaw['entryCount'] ?? 0) > 0)
+            ]);
+            $prevData = array_merge($this->recalculateCost($prevRaw, $val), [
+                'start' => $prevStart,
+                'end' => $prevEnd,
+                'hasData' => ((int)($prevRaw['entryCount'] ?? 0) > 0)
+            ]);
         } else {
-            $year = date('Y');
-            $month = date('n');
-            $prevMonth = $month == 1 ? 12 : $month - 1;
-            $prevYear = $month == 1 ? $year - 1 : $year;
+            $this->billingCycleService->advanceCycleIfNeeded($id['value']);
 
-            $currResult = $this->getMonthlyConsumptionFiltered($roomId, $userId, $role, $year, $month);
-            $currData = $currResult['data'];
+            // Fetch active cycle to determine current billing month
+            $stmtActive = $this->conn->prepare("SELECT * FROM billing_cycles WHERE room_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1");
+            $stmtActive->execute([$id['value']]);
+            $activeCycle = $stmtActive->fetch(PDO::FETCH_ASSOC);
 
-            $prevResult = $this->getMonthlyConsumptionFiltered($roomId, $userId, $role, $prevYear, $prevMonth);
-            $prevData = $prevResult['data'];
+            if ($activeCycle) {
+                // 1. Current Month = Active billing cycle live data
+                $liveBill = $this->billingCycleService->getLiveBillBreakdown($id['value'], $activeCycle['id']);
+
+                $stmtLogs = $this->conn->prepare("SELECT COUNT(*) FROM consumption_logs WHERE billing_cycle_id = ?");
+                $stmtLogs->execute([$activeCycle['id']]);
+                $currCnt = (int)$stmtLogs->fetchColumn();
+
+                $currEnergy = (float)($liveBill['consumptionKwh'] ?? 0);
+                $currCost = (float)($liveBill['electricityCharge'] ?? 0);
+
+                $currData = [
+                    'cycle_id' => (int)$activeCycle['id'],
+                    'start' => $activeCycle['cycle_start'],
+                    'end' => $activeCycle['cycle_end'],
+                    'totalEnergy' => $currEnergy,
+                    'totalCost' => $currCost,
+                    'electricityCharge' => $currCost,
+                    'totalAmountDue' => (float)($liveBill['totalAmountDue'] ?? 0),
+                    'hasData' => ($currCnt > 0 || $currEnergy > 0 || $currCost > 0)
+                ];
+
+                // 2. Previous Month = Billing cycle immediately preceding the active cycle
+                $stmtPrev = $this->conn->prepare("SELECT * FROM billing_cycles WHERE room_id = ? AND id < ? ORDER BY id DESC LIMIT 1");
+                $stmtPrev->execute([$id['value'], $activeCycle['id']]);
+                $prevCycle = $stmtPrev->fetch(PDO::FETCH_ASSOC);
+
+                if ($prevCycle) {
+                    $prevEnergy = (float)($prevCycle['total_kwh'] ?? 0);
+                    $prevCost = (float)($prevCycle['electricity_charge'] ?? $prevCycle['total_cost'] ?? 0);
+
+                    if ($prevEnergy == 0) {
+                        $stmtPrevLogs = $this->conn->prepare("SELECT COALESCE(SUM(energy), 0) as energy, COALESCE(SUM(cost), 0) as cost, COUNT(*) as cnt FROM consumption_logs WHERE billing_cycle_id = ?");
+                        $stmtPrevLogs->execute([$prevCycle['id']]);
+                        $prevUsage = $stmtPrevLogs->fetch(PDO::FETCH_ASSOC);
+                        if (!empty($prevUsage['cnt']) && $prevUsage['cnt'] > 0) {
+                            $prevEnergy = (float)$prevUsage['energy'];
+                            $prevCost = $prevCost > 0 ? $prevCost : (float)$prevUsage['cost'];
+                        }
+                    }
+
+                    $prevData = [
+                        'cycle_id' => (int)$prevCycle['id'],
+                        'start' => $prevCycle['cycle_start'],
+                        'end' => $prevCycle['cycle_end'],
+                        'totalEnergy' => $prevEnergy,
+                        'totalCost' => $prevCost,
+                        'electricityCharge' => $prevCost,
+                        'totalAmountDue' => (float)($prevCycle['grand_total'] ?? 0),
+                        'hasData' => true
+                    ];
+                } else {
+                    // No prior billing cycle recorded for this tenant/room
+                    $prevData = [
+                        'cycle_id' => null,
+                        'start' => null,
+                        'end' => null,
+                        'totalEnergy' => 0,
+                        'totalCost' => 0,
+                        'electricityCharge' => 0,
+                        'totalAmountDue' => 0,
+                        'hasData' => false
+                    ];
+                }
+            } else {
+                // Fallback: No billing cycles exist, compare calendar months
+                $year = (int) date('Y');
+                $month = (int) date('n');
+                $prevMonth = $month == 1 ? 12 : $month - 1;
+                $prevYear = $month == 1 ? $year - 1 : $year;
+
+                $currResult = $this->getMonthlyConsumptionFiltered($roomId, $userId, $role, $year, $month);
+                $currData = $currResult['data'];
+                $currData['start'] = $currData['cycle_start'] ?? null;
+                $currData['end'] = $currData['cycle_end'] ?? null;
+
+                $prevResult = $this->getMonthlyConsumptionFiltered($roomId, $userId, $role, $prevYear, $prevMonth);
+                $prevData = $prevResult['data'];
+                $prevData['start'] = $prevData['cycle_start'] ?? null;
+                $prevData['end'] = $prevData['cycle_end'] ?? null;
+            }
         }
 
         $prevEnergy = (float)($prevData['totalEnergy'] ?? 0);
         $currEnergy = (float)($currData['totalEnergy'] ?? 0);
         $prevCost = (float)($prevData['totalCost'] ?? 0);
         $currCost = (float)($currData['totalCost'] ?? 0);
+        $prevHasData = !empty($prevData['hasData']);
+        $currHasData = !empty($currData['hasData']);
+
+        $costDiff = $currCost - $prevCost;
+        $energyDiff = $currEnergy - $prevEnergy;
 
         $energyPctChange = 0;
-        if ($prevEnergy > 0) {
+        if ($prevHasData && $prevEnergy > 0) {
             $energyPctChange = (($currEnergy - $prevEnergy) / $prevEnergy) * 100;
-        } elseif ($currEnergy > 0) {
+        } elseif ($prevHasData && $prevEnergy == 0 && $currEnergy > 0) {
             $energyPctChange = 100;
         }
 
         $costPctChange = 0;
-        if ($prevCost > 0) {
+        if ($prevHasData && $prevCost > 0) {
             $costPctChange = (($currCost - $prevCost) / $prevCost) * 100;
-        } elseif ($currCost > 0) {
+        } elseif ($prevHasData && $prevCost == 0 && $currCost > 0) {
             $costPctChange = 100;
         }
 
-        // Calculate anomalies and budget check
+        if (!is_finite($energyPctChange)) $energyPctChange = 0;
+        if (!is_finite($costPctChange)) $costPctChange = 0;
+
+        // Calculate anomalies (only evaluated if previous period had real data)
         $isAbnormal = false;
-        if ($prevEnergy > 0) {
+        if ($prevHasData && $prevEnergy > 0) {
             $pctChange = (($currEnergy - $prevEnergy) / $prevEnergy) * 100;
             if (abs($pctChange) >= 30)
                 $isAbnormal = true;
@@ -388,8 +567,11 @@ class DashboardService
         return [
             'success' => true,
             'data' => [
+                'period' => $period,
                 'current' => $currData,
                 'previous' => $prevData,
+                'costDiff' => $costDiff,
+                'energyDiff' => $energyDiff,
                 'isAbnormal' => $isAbnormal,
                 'energyPctChange' => $energyPctChange,
                 'costPctChange' => $costPctChange

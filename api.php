@@ -99,7 +99,7 @@ try {
     $data = SecurityMiddleware::sanitizeInput($data);
 
     // Auth Middleware (Only enforce if not a public action)
-    $publicActions = ['login', 'register', 'verifyOTP', 'refreshToken', 'requestPasswordReset', 'verifyResetOTP', 'resetPassword', 'sendVerificationCode', 'resendVerificationCode', 'getTenantInvitationByEmail', 'verifyAccessCode', 'logConsumption', 'getActiveTerms', 'health', 'ping'];
+    $publicActions = ['login', 'register', 'verifyOTP', 'refreshToken', 'requestPasswordReset', 'verifyResetOTP', 'resetPassword', 'sendVerificationCode', 'resendVerificationCode', 'getTenantInvitationByEmail', 'verifyAccessCode', 'logConsumption', 'getActiveTerms', 'health', 'ping', 'getDormitoryBusinessInfo', 'getDormitoryDocuments'];
     
     $authenticatedUser = null;
     $authSecret = defined('SECRET_KEY') ? constant('SECRET_KEY') : config('SECRET_KEY', 'default_fallback_key_change_me');
@@ -107,6 +107,8 @@ try {
     
     if (!in_array($action, $publicActions)) {
         $authenticatedUser = $auth->handle();
+    } else {
+        $authenticatedUser = $auth->tryHandle();
     }
 
     // Lazy Evaluation: Calculate daily penalties if they haven't been calculated today.

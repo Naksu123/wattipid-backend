@@ -58,6 +58,43 @@ class AuthMiddleware {
         return $payload;
     }
 
+    public function tryHandle() {
+        try {
+            $authHeader = '';
+            $headers = function_exists('getallheaders') ? getallheaders() : [];
+            if ($headers) {
+                foreach ($headers as $key => $value) {
+                    if (strtolower($key) === 'authorization' || strtolower($key) === 'x-authorization') {
+                        $authHeader = $value;
+                        break;
+                    }
+                }
+            }
+            if (empty($authHeader)) {
+                $authHeader = $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '';
+            }
+            if (empty($authHeader)) return null;
+
+            $token = str_replace('Bearer ', '', $authHeader);
+            $payload = $this->verifyToken($token);
+            if (!$payload) return null;
+
+            $stmt = $this->conn->prepare("SELECT token_version, room_id, name, role FROM users WHERE id = ?");
+            $stmt->execute([$payload['id']]);
+            $userRow = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$userRow || (int)$payload['ver'] !== (int)$userRow['token_version']) return null;
+
+            $payload['room_id'] = $userRow['room_id'] ?? null;
+            $payload['name'] = $userRow['name'] ?? null;
+            $payload['role'] = $userRow['role'] ?? ($payload['role'] ?? null);
+
+            return $payload;
+        } catch (Throwable $e) {
+            return null;
+        }
+    }
+
     private function verifyToken($token) {
         try {
             $parts = explode('.', $token);
@@ -79,3 +116,4 @@ class AuthMiddleware {
         }
     }
 }
+

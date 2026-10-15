@@ -13,6 +13,7 @@ require_once __DIR__ . '/../controllers/PenaltyController.php';
 require_once __DIR__ . '/../controllers/AuditController.php';
 require_once __DIR__ . '/../controllers/SyncController.php';
 require_once __DIR__ . '/../controllers/TermsController.php';
+require_once __DIR__ . '/../controllers/DormitoryController.php';
 require_once __DIR__ . '/../middlewares/IoTMiddleware.php';
 require_once __DIR__ . '/../helpers/ResponseHelper.php';
 
@@ -45,6 +46,8 @@ class Router {
     private $syncController;
     /** @var TermsController */
     private $termsController;
+    /** @var DormitoryController */
+    private $dormitoryController;
     /** @var IoTMiddleware */
     private $iotMiddleware;
 
@@ -63,6 +66,7 @@ class Router {
         $this->auditController = new AuditController($dbConnection);
         $this->syncController = new SyncController($dbConnection);
         $this->termsController = new TermsController($dbConnection);
+        $this->dormitoryController = new DormitoryController($dbConnection);
         $this->iotMiddleware = new IoTMiddleware($dbConnection);
     }
 
@@ -442,6 +446,26 @@ class Router {
             // SYNC
             case 'syncState':
                 $this->syncController->syncState($authenticatedUser, $data);
+                return true;
+
+            // DORMITORY BUSINESS INFO & LEGAL DOCUMENTS
+            case 'getDormitoryBusinessInfo':
+                $this->dormitoryController->getBusinessInfo();
+                return true;
+            case 'updateDormitoryBusinessInfo':
+                $this->dormitoryController->updateBusinessInfo($authenticatedUser, $data);
+                return true;
+            case 'getDormitoryDocuments':
+                $this->dormitoryController->getDocuments($authenticatedUser);
+                return true;
+            case 'saveDormitoryDocument':
+                $this->dormitoryController->saveDocument($authenticatedUser, $data);
+                return true;
+            case 'deleteDormitoryDocument':
+                $this->dormitoryController->deleteDocument($authenticatedUser, $data);
+                return true;
+            case 'verifyDormitoryDocument':
+                $this->dormitoryController->verifyDocument($authenticatedUser, $data);
                 return true;
 
             // HEALTH / CONNECTIVITY

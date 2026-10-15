@@ -193,6 +193,50 @@ class DatabaseMigrationHelper {
                 }
             } catch (Throwable $t) {}
 
+            // 7. Ensure dormitory_business_info table exists
+            $conn->exec("CREATE TABLE IF NOT EXISTS dormitory_business_info (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                registered_business_name VARCHAR(255) DEFAULT NULL,
+                property_name VARCHAR(255) DEFAULT NULL,
+                business_address TEXT DEFAULT NULL,
+                owner_operator_name VARCHAR(255) DEFAULT NULL,
+                registration_type VARCHAR(100) DEFAULT NULL,
+                registration_number VARCHAR(100) DEFAULT NULL,
+                contact_phone VARCHAR(50) DEFAULT NULL,
+                contact_email VARCHAR(100) DEFAULT NULL,
+                date_established DATE DEFAULT NULL,
+                tin_number VARCHAR(50) DEFAULT NULL,
+                notes TEXT DEFAULT NULL,
+                updated_by INT DEFAULT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+            // 8. Ensure dormitory_documents table exists
+            $conn->exec("CREATE TABLE IF NOT EXISTS dormitory_documents (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                document_name VARCHAR(255) NOT NULL,
+                document_type VARCHAR(150) NOT NULL,
+                issuing_authority VARCHAR(255) DEFAULT NULL,
+                permit_number VARCHAR(100) DEFAULT NULL,
+                issue_date DATE DEFAULT NULL,
+                expiration_date DATE DEFAULT NULL,
+                file_url LONGTEXT NOT NULL,
+                file_name VARCHAR(255) DEFAULT NULL,
+                file_type VARCHAR(100) DEFAULT 'image/jpeg',
+                file_size_kb INT DEFAULT NULL,
+                verification_status ENUM('pending_verification', 'verified', 'expired') DEFAULT 'pending_verification',
+                verified_at DATETIME DEFAULT NULL,
+                verified_by INT DEFAULT NULL,
+                verification_notes TEXT DEFAULT NULL,
+                is_public_for_tenants TINYINT(1) DEFAULT 1,
+                created_by INT DEFAULT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                KEY idx_doc_type (document_type),
+                KEY idx_doc_status (verification_status)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
             self::$migrated = true;
         } catch (Throwable $e) {
             error_log("[DatabaseMigrationHelper] Error ensuring schema: " . $e->getMessage());
