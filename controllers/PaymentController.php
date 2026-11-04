@@ -380,15 +380,31 @@ class PaymentController {
                 $this->recalculateRoomPreviousBalances($payment['room_id']);
 
                 // Fetch tenant user for email template
-                $tenantStmt = $this->db->prepare("SELECT name, email FROM users WHERE id = ?");
+                $tenantStmt = $this->db->prepare("SELECT id, name, email FROM users WHERE id = ?");
                 $tenantStmt->execute([$payment['tenant_id']]);
                 $tenantUser = $tenantStmt->fetch(PDO::FETCH_ASSOC);
+
+                // Fallback: If tenantUser is missing or tenantEmail is empty, lookup room's active tenant
+                if ((!$tenantUser || empty($tenantUser['email'])) && !empty($payment['room_id'])) {
+                    $fbStmt = $this->db->prepare("SELECT id, name, email FROM users WHERE room_id = ? AND role = 'tenant' LIMIT 1");
+                    $fbStmt->execute([$payment['room_id']]);
+                    $fbUser = $fbStmt->fetch(PDO::FETCH_ASSOC);
+                    if ($fbUser) {
+                        $tenantUser = $fbUser;
+                        if (empty($payment['tenant_id'])) {
+                            $payment['tenant_id'] = $fbUser['id'];
+                        }
+                    }
+                }
+
                 $tenantName = $tenantUser['name'] ?? ($bc['tenant_name'] ?? 'Tenant');
                 $tenantEmail = $tenantUser['email'] ?? '';
 
                 $invoiceNum = $bc['invoice_number'] ?: ('WT-' . date('Ym', strtotime($bc['cycle_start'] ?? 'now')) . '-' . $bc['id']);
 
                 $paymentData = [
+                    'paymentId' => $paymentId,
+                    'amountPaid' => $actualAmount,
                     'tenantName' => $tenantName,
                     'tenantEmail' => $tenantEmail,
                     'roomNumber' => $payment['room_id'],
@@ -406,7 +422,7 @@ class PaymentController {
                     'totalAmount' => $standaloneTotal,
                     'remainingBalance' => $remainingBalance,
                     'isOverdue' => (!empty($bc['due_date']) && strtotime($bc['due_date']) < time()),
-                    'isFullyPaid' => ($newStatus === 'paid' && $remainingBalance <= 0.00)
+                    'isFullyPaid' => ($remainingBalance <= 0.00)
                 ];
 
                 // COMMIT the database transaction FIRST
@@ -584,11 +600,13 @@ class PaymentController {
             // Insert into payments as verified cash payment
             $stmt = $this->db->prepare("INSERT INTO payments (billing_cycle_id, room_id, tenant_id, amount, payment_method, reference_number, status, verified_by, paid_at) VALUES (?, ?, ?, ?, 'cash', 'OFFLINE-CASH', 'verified', ?, NOW())");
             
-            // We need a tenant_id, just get it from the room's current tenant if any
-            $stmtTenant = $this->db->prepare("SELECT tenant_id FROM rooms WHERE room_id = ?");
+            // We need a tenant_id, lookup from users for this room
+            $stmtTenant = $this->db->prepare("SELECT id, name, email FROM users WHERE room_id = ? AND role = 'tenant' LIMIT 1");
             $stmtTenant->execute([$roomId]);
             $tenantData = $stmtTenant->fetch(PDO::FETCH_ASSOC);
-            $tenantId = $tenantData ? $tenantData['tenant_id'] : null;
+            $tenantId = $tenantData ? $tenantData['id'] : null;
+            $tenantName = $tenantData ? $tenantData['name'] : ($cycle['tenant_name'] ?? 'Tenant');
+            $tenantEmail = $tenantData ? $tenantData['email'] : '';
 
             $stmt->execute([
                 $billingCycleId,
@@ -615,56 +633,58 @@ class PaymentController {
             $this->db->commit();
             $committed = true;
 
-            // POST-COMMIT: Trigger real-time notification & email if tenant exists
-            if ($tenantId) {
-                try {
-                    $stmt_bc = $this->db->prepare("SELECT * FROM billing_cycles WHERE id = ?");
-                    $stmt_bc->execute([$billingCycleId]);
-                    $bc = $stmt_bc->fetch(PDO::FETCH_ASSOC);
+            // POST-COMMIT: Trigger real-time notification & email
+            try {
+                $stmt_bc = $this->db->prepare("SELECT * FROM billing_cycles WHERE id = ?");
+                $stmt_bc->execute([$billingCycleId]);
+                $bc = $stmt_bc->fetch(PDO::FETCH_ASSOC);
 
+                if (empty($tenantEmail) && $tenantId) {
                     $tenantStmt = $this->db->prepare("SELECT name, email FROM users WHERE id = ?");
                     $tenantStmt->execute([$tenantId]);
                     $tenantUser = $tenantStmt->fetch(PDO::FETCH_ASSOC);
-                    $tenantName = $tenantUser['name'] ?? ($bc['tenant_name'] ?? 'Tenant');
-                    $tenantEmail = $tenantUser['email'] ?? '';
-
-                    $invoiceNum = $bc['invoice_number'] ?: ('WT-' . date('Ym', strtotime($bc['cycle_start'] ?? 'now')) . '-' . $bc['id']);
-
-                    $paymentData = [
-                        'tenantName' => $tenantName,
-                        'tenantEmail' => $tenantEmail,
-                        'roomNumber' => $roomId,
-                        'paymentMethod' => 'Cash',
-                        'referenceNumber' => 'OFFLINE-CASH',
-                        'dateSubmitted' => date('Y-m-d H:i:s'),
-                        'paymentDate' => date('Y-m-d H:i:s'),
-                        'dateVerified' => date('Y-m-d H:i:s'),
-                        'verifiedBy' => $authenticatedUser['name'] ?? 'Landlord',
-                        'invoiceNumber' => $invoiceNum,
-                        'billingCycleId' => $billingCycleId,
-                        'cycleStart' => $bc['cycle_start'] ?? null,
-                        'cycleEnd' => $bc['cycle_end'] ?? null,
-                        'dueDate' => $bc['due_date'] ?? null,
-                        'totalAmount' => $standaloneTotal,
-                        'remainingBalance' => $remainingBalance,
-                        'isOverdue' => (!empty($bc['due_date']) && strtotime($bc['due_date']) < time()),
-                        'isFullyPaid' => ($newStatus === 'paid' && $remainingBalance <= 0.00)
-                    ];
-
-                    require_once __DIR__ . '/../services/BillingNotificationService.php';
-                    $notifSvc = new BillingNotificationService($this->db);
-                    $notifSvc->sendPaymentVerificationAlert(
-                        $roomId,
-                        $tenantId,
-                        $amount,
-                        $newStatus,
-                        'Cash',
-                        $remainingBalance,
-                        $paymentData
-                    );
-                } catch (Throwable $notifEx) {
-                    error_log("[PaymentController] Offline payment notification error: " . $notifEx->getMessage());
+                    $tenantName = $tenantUser['name'] ?? $tenantName;
+                    $tenantEmail = $tenantUser['email'] ?? $tenantEmail;
                 }
+
+                $invoiceNum = $bc['invoice_number'] ?: ('WT-' . date('Ym', strtotime($bc['cycle_start'] ?? 'now')) . '-' . $bc['id']);
+
+                $paymentData = [
+                    'paymentId' => $paymentId,
+                    'amountPaid' => $amount,
+                    'tenantName' => $tenantName,
+                    'tenantEmail' => $tenantEmail,
+                    'roomNumber' => $roomId,
+                    'paymentMethod' => 'Cash',
+                    'referenceNumber' => 'OFFLINE-CASH',
+                    'dateSubmitted' => date('Y-m-d H:i:s'),
+                    'paymentDate' => date('Y-m-d H:i:s'),
+                    'dateVerified' => date('Y-m-d H:i:s'),
+                    'verifiedBy' => $authenticatedUser['name'] ?? 'Landlord',
+                    'invoiceNumber' => $invoiceNum,
+                    'billingCycleId' => $billingCycleId,
+                    'cycleStart' => $bc['cycle_start'] ?? null,
+                    'cycleEnd' => $bc['cycle_end'] ?? null,
+                    'dueDate' => $bc['due_date'] ?? null,
+                    'totalAmount' => $standaloneTotal,
+                    'remainingBalance' => $remainingBalance,
+                    'isOverdue' => (!empty($bc['due_date']) && strtotime($bc['due_date']) < time()),
+                    'isFullyPaid' => ($remainingBalance <= 0.00)
+                ];
+
+                require_once __DIR__ . '/../services/BillingNotificationService.php';
+                $notifSvc = new BillingNotificationService($this->db);
+                $notifSvc->sendPaymentVerificationAlert(
+                    $roomId,
+                    $tenantId,
+                    $amount,
+                    $newStatus,
+                    'Cash',
+                    $remainingBalance,
+                    $paymentData
+                );
+            } catch (Throwable $notifEx) {
+                error_log("[PaymentController] Offline payment notification error: " . $notifEx->getMessage());
             }
 
             echo json_encode(["success" => true, "message" => "Payment successfully recorded and verified as cash"]);
@@ -1154,6 +1174,13 @@ class PaymentController {
 
             // 4. Compute standalone cycle total (without previous_balance to avoid double-counting)
             $cElec = (float)($bc['electricity_charge'] ?? $bc['total_cost'] ?? 0);
+            if ($bc['status'] === 'active' && $cElec <= 0.00) {
+                $usageStmt = $this->db->prepare("SELECT COALESCE(SUM(energy), 0) as totalEnergy, COALESCE(SUM(cost), 0) as totalCost FROM consumption_logs WHERE billing_cycle_id = ?");
+                $usageStmt->execute([$cycleId]);
+                $usage = $usageStmt->fetch(PDO::FETCH_ASSOC);
+                $rate = (float)($bc['rate_per_kwh'] ?: 12.50);
+                $cElec = round((float)($usage['totalEnergy'] ?? 0) * $rate, 2);
+            }
             $cMisc = (float)($bc['miscellaneous_fee'] ?? 0);
             $cRent = (float)($bc['monthly_rent'] ?? 0);
             $cAdd = (float)($bc['additional_charges'] ?? 0);
@@ -1164,7 +1191,7 @@ class PaymentController {
             // 5. Determine new status & remaining balance
             $remainingBalance = max(0.00, round($standaloneTotal - $verifiedPaid, 2));
 
-            if ($standaloneTotal > 0 && $verifiedPaid >= $standaloneTotal - 0.01) {
+            if (($standaloneTotal > 0 && $verifiedPaid >= $standaloneTotal - 0.01) || ($standaloneTotal <= 0 && $verifiedPaid > 0)) {
                 $newStatus = 'paid';
                 $remainingBalance = 0.00;
             } elseif ($hasPending) {

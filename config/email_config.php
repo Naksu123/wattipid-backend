@@ -3,9 +3,11 @@
  * Email API Configuration for Wattipid
  */
 
+require_once __DIR__ . '/config.php';
+
 // ============ EMAIL PROVIDER SELECTION ============
-// Options: 'sendgrid', 'brevo', 'mock'
-if (!defined('EMAIL_PROVIDER')) define('EMAIL_PROVIDER', config('EMAIL_PROVIDER', 'brevo'));
+// Options: 'smtp', 'sendgrid', 'brevo', 'mock'
+if (!defined('EMAIL_PROVIDER')) define('EMAIL_PROVIDER', config('EMAIL_PROVIDER', 'smtp'));
 
 // Sign up at https://sendgrid.com (100 emails/day free tier)
 define('SENDGRID_API_KEY', config('SENDGRID_API_KEY', ''));

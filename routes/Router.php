@@ -115,6 +115,10 @@ class Router {
                 $this->iotController->getLatestConsumption($authenticatedUser, $data);
                 return true;
 
+            case 'setSimulationMode':
+                $this->iotController->setSimulationMode($authenticatedUser, $data);
+                return true;
+
             case 'toggleRelay':
                 $this->iotController->toggleRelay($authenticatedUser, $data);
                 return true;

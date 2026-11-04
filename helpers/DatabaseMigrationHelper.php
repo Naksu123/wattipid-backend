@@ -237,6 +237,10 @@ class DatabaseMigrationHelper {
                 KEY idx_doc_status (verification_status)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
+            // 9. Ensure columns for Hardware vs Simulation Mode separation
+            self::addColumnIfMissing($conn, 'consumption_logs', 'data_source', "VARCHAR(20) NOT NULL DEFAULT 'hardware'");
+            self::addColumnIfMissing($conn, 'rooms', 'is_simulated', "TINYINT(1) NOT NULL DEFAULT 0");
+
             self::$migrated = true;
         } catch (Throwable $e) {
             error_log("[DatabaseMigrationHelper] Error ensuring schema: " . $e->getMessage());

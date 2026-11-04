@@ -26,8 +26,9 @@ class IoTController {
         $current = (float) ($data['current'] ?? 0);
         $power = (float) ($data['power'] ?? 0);
         $cumulativeEnergy = (float) ($data['energy'] ?? 0);
+        $source = !empty($data['source']) ? $data['source'] : (!empty($data['is_simulated']) ? 'simulation' : 'hardware');
 
-        $result = $this->iotService->logConsumption($data['roomId'], $voltage, $current, $power, $cumulativeEnergy);
+        $result = $this->iotService->logConsumption($data['roomId'], $voltage, $current, $power, $cumulativeEnergy, $source);
         ResponseHelper::sendRaw($result);
     }
 
@@ -65,9 +66,19 @@ class IoTController {
             ResponseHelper::error("Forbidden: Invalid user role.", 403);
         }
 
+        // FAST ZERO-DELAY CACHE: Check if live reading was saved within last 5 seconds
+        $cacheFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'live_sensor_' . md5($roomId) . '.json';
+        if (file_exists($cacheFile) && (time() - filemtime($cacheFile)) <= 5) {
+            $cached = json_decode(@file_get_contents($cacheFile), true);
+            if ($cached && isset($cached['power'])) {
+                ResponseHelper::sendRaw(['success' => true, 'data' => $cached]);
+                return;
+            }
+        }
+
         // Direct query to get ALL sensor columns from the latest log
         $stmt = $this->conn->prepare(
-            "SELECT voltage, current_val, power, energy_cumulative, timestamp 
+            "SELECT voltage, current_val, power, energy_cumulative, timestamp, data_source 
              FROM consumption_logs 
              WHERE room_id = ? 
              ORDER BY timestamp DESC 
@@ -90,6 +101,7 @@ class IoTController {
         $power = (float)$log['power'];
         $energy = (float)$log['energy_cumulative'];
         $pf = ($voltage * $current > 0) ? round($power / ($voltage * $current), 2) : 0;
+        $source = $log['data_source'] ?? 'hardware';
 
         ResponseHelper::sendRaw(['success' => true, 'data' => [
             'voltage' => $voltage,
@@ -98,7 +110,32 @@ class IoTController {
             'energy' => $energy,
             'powerFactor' => $pf,
             'online' => $isOnline,
-            'lastSeen' => $log['timestamp']
+            'lastSeen' => $log['timestamp'],
+            'source' => $source,
+            'is_simulated' => ($source === 'simulation')
         ]]);
+    }
+
+    public function setSimulationMode($user, $data) {
+        if (!$user) {
+            ResponseHelper::error("Unauthorized: Authentication required", 401);
+        }
+        $roomId = $data['roomId'] ?? ($user['room_id'] ?? null);
+        $enabled = !empty($data['enabled']);
+        if (!$roomId) {
+            ResponseHelper::error("Room ID is required", 400);
+        }
+
+        $stmt = $this->conn->prepare("UPDATE rooms SET is_simulated = ? WHERE room_id = ?");
+        $stmt->execute([$enabled ? 1 : 0, $roomId]);
+
+        ResponseHelper::sendRaw([
+            'success' => true,
+            'message' => "Simulation mode " . ($enabled ? "enabled" : "disabled") . " for {$roomId}",
+            'data' => [
+                'roomId' => $roomId,
+                'is_simulated' => $enabled
+            ]
+        ]);
     }
 }

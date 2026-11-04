@@ -341,11 +341,25 @@ class BillingNotificationService {
     // CHECK 4: Payment Verification Alerts (Real-time trigger)
     // =========================================================
     public function sendPaymentVerificationAlert($roomId, $userId, $amountPaid, $status, $paymentMethod, $remainingBalance, $paymentData = [], $force = false) {
-        $settings = $this->getPreferences($userId, $roomId);
-        if (!$settings['notifications_enabled'] || !($settings['payment_alerts'] ?? true)) return false;
+        // Resolve tenant user if userId is missing or empty
+        if (empty($userId) && !empty($roomId)) {
+            $uStmt = $this->conn->prepare("SELECT id, name, email FROM users WHERE room_id = ? AND role = 'tenant' LIMIT 1");
+            $uStmt->execute([$roomId]);
+            $uRow = $uStmt->fetch(PDO::FETCH_ASSOC);
+            if ($uRow) {
+                $userId = $uRow['id'];
+                if (empty($paymentData['tenantName'])) $paymentData['tenantName'] = $uRow['name'];
+                if (empty($paymentData['tenantEmail'])) $paymentData['tenantEmail'] = $uRow['email'];
+            }
+        }
 
-        $isFullyPaid = ($status === 'paid' && $remainingBalance <= 0.00);
-        $isPartial = ($status === 'partially_paid' || ($status !== 'paid' && $remainingBalance > 0.00));
+        $settings = $this->getPreferences($userId, $roomId);
+        $notificationsEnabled = (bool)($settings['notifications_enabled'] ?? true);
+        $paymentAlertsEnabled = (bool)($settings['payment_alerts'] ?? true);
+
+        // Standardize settled / partial status
+        $isFullyPaid = ($remainingBalance <= 0.00 || $status === 'paid');
+        $isPartial = (!$isFullyPaid && $remainingBalance > 0.00);
         
         $invoiceNum = $paymentData['invoiceNumber'] ?? 'N/A';
         $title = $isPartial ? '💵 Partial Payment Verified' : 'Payment Confirmed — Account Fully Paid';
@@ -368,62 +382,94 @@ class BillingNotificationService {
             ]
         ];
 
-        try {
-            $ownsTransaction = false;
-            if (!$this->conn->inTransaction()) {
-                $this->conn->beginTransaction();
-                $ownsTransaction = true;
-            }
-
-            $notifId = $this->saveNotification($userId, $roomId, $alert);
-            
-            if ($ownsTransaction) {
-                $this->conn->commit();
-            }
-
-            $alert['id'] = $notifId;
-
-            if ($settings['push_enabled']) {
-                $pushAlert = $alert;
-                if (!$isPartial) {
-                    $pushAlert['title'] = "Payment Confirmed — Account Fully Paid";
-                    $pushAlert['message'] = "Your payment of ₱" . number_format($amountPaid, 2) . " has been accepted. Invoice #{$invoiceNum} is fully paid.";
+        // 1. In-app and Push Notification (Guarded by user preferences)
+        if ($notificationsEnabled && $paymentAlertsEnabled && !empty($userId)) {
+            try {
+                $ownsTransaction = false;
+                if (!$this->conn->inTransaction()) {
+                    $this->conn->beginTransaction();
+                    $ownsTransaction = true;
                 }
-                $pushAlert['data']['url'] = '/(tenant)/billing-history';
-                $this->queuePush($userId, $pushAlert);
-            }
 
-            if (!empty($paymentData)) {
-                $tenantEmail = $paymentData['tenantEmail'] ?? null;
-                if (!$tenantEmail) {
-                    $userStmt = $this->conn->prepare("SELECT email FROM users WHERE id = ?");
-                    $userStmt->execute([$userId]);
-                    $tenantEmail = $userStmt->fetchColumn();
-                }
+                $notifId = $this->saveNotification($userId, $roomId, $alert);
                 
-                if ($tenantEmail && filter_var($tenantEmail, FILTER_VALIDATE_EMAIL)) {
-                    $this->queueVerificationEmail($tenantEmail, $amountPaid, $paymentData, $isPartial, $remainingBalance, $force);
-                } else {
-                    error_log("[BillingNotifSvc] Skipping email: No valid email found for tenant user ID {$userId}");
+                if ($ownsTransaction) {
+                    $this->conn->commit();
+                }
+
+                $alert['id'] = $notifId;
+
+                if ($settings['push_enabled']) {
+                    $pushAlert = $alert;
+                    if (!$isPartial) {
+                        $pushAlert['title'] = "Payment Confirmed — Account Fully Paid";
+                        $pushAlert['message'] = "Your payment of ₱" . number_format($amountPaid, 2) . " has been accepted. Invoice #{$invoiceNum} is fully paid.";
+                    }
+                    $pushAlert['data']['url'] = '/(tenant)/billing-history';
+                    $this->queuePush($userId, $pushAlert);
+                }
+            } catch (Exception $e) {
+                if (isset($ownsTransaction) && $ownsTransaction && $this->conn->inTransaction()) {
+                    $this->conn->rollBack();
+                }
+                error_log("[BillingNotifSvc] Error saving payment alert: " . $e->getMessage());
+            }
+        }
+
+        // 2. Transactional Email Receipt (Always attempted for verified financial payments)
+        if (!empty($paymentData)) {
+            $tenantEmail = $paymentData['tenantEmail'] ?? null;
+            if (!$tenantEmail && !empty($userId)) {
+                $userStmt = $this->conn->prepare("SELECT email, name FROM users WHERE id = ?");
+                $userStmt->execute([$userId]);
+                $uData = $userStmt->fetch(PDO::FETCH_ASSOC);
+                if ($uData) {
+                    $tenantEmail = $uData['email'];
+                    if (empty($paymentData['tenantName'])) $paymentData['tenantName'] = $uData['name'];
                 }
             }
-
-            return true;
-        } catch (Exception $e) {
-            if (isset($ownsTransaction) && $ownsTransaction && $this->conn->inTransaction()) {
-                $this->conn->rollBack();
+            if (!$tenantEmail && !empty($roomId)) {
+                $roomUserStmt = $this->conn->prepare("SELECT email, name FROM users WHERE room_id = ? AND role = 'tenant' LIMIT 1");
+                $roomUserStmt->execute([$roomId]);
+                $rData = $roomUserStmt->fetch(PDO::FETCH_ASSOC);
+                if ($rData) {
+                    $tenantEmail = $rData['email'];
+                    if (empty($paymentData['tenantName'])) $paymentData['tenantName'] = $rData['name'];
+                }
             }
-            error_log("[BillingNotifSvc] Error saving payment alert: " . $e->getMessage());
-            return false;
+            
+            if ($tenantEmail && filter_var($tenantEmail, FILTER_VALIDATE_EMAIL)) {
+                $this->queueVerificationEmail($tenantEmail, $amountPaid, $paymentData, $isPartial, $remainingBalance, $force);
+            } else {
+                error_log("[BillingNotifSvc] Skipping email: No valid email found for tenant user ID " . var_export($userId, true) . " in room " . var_export($roomId, true));
+            }
         }
+
+        return true;
     }
 
     private function queueVerificationEmail($toEmail, $amountPaid, $paymentData, $isPartial = false, $remainingBalance = 0, $force = false) {
         $cycleId = $paymentData['billingCycleId'] ?? null;
+        $paymentId = $paymentData['paymentId'] ?? null;
         $isFullyPaid = (!$isPartial && $remainingBalance <= 0.00);
 
-        // IDEMPOTENCY CHECK: Prevent duplicate "Fully Paid" emails for the same settled billing cycle (unless explicitly forced)
-        if ($isFullyPaid && $cycleId && !$force) {
+        // IDEMPOTENCY CHECK:
+        // Prevent duplicate emails for the SAME verified payment ID (or cycle fallback)
+        if ($paymentId && !$force) {
+            try {
+                $checkStmt = $this->conn->prepare(
+                    "SELECT id FROM email_logs WHERE error_message = ? AND status = 'sent' LIMIT 1"
+                );
+                $checkStmt->execute(["payment:{$paymentId}"]);
+                if ($checkStmt->fetchColumn()) {
+                    error_log("[BillingNotifSvc] Verification email already sent for payment {$paymentId}. Skipping duplicate.");
+                    return true;
+                }
+            } catch (Exception $checkEx) {
+                error_log("[BillingNotifSvc] Idempotency check error: " . $checkEx->getMessage());
+            }
+        } elseif ($isFullyPaid && $cycleId && !$force && !$paymentId) {
+            // Fallback for legacy callers without paymentId
             try {
                 $checkStmt = $this->conn->prepare(
                     "SELECT id FROM email_logs WHERE type = 'payment_fully_paid' AND error_message = ? AND status = 'sent' LIMIT 1"
@@ -455,7 +501,7 @@ class BillingNotificationService {
         $remBalFmt = number_format($remainingBalance, 2);
 
         if ($isFullyPaid) {
-            $subject = "Wattipid Payment Confirmed — Account Fully Paid";
+            $subject = "Payment Confirmed — Account Fully Paid - Wattipid";
             $headerColor = "#10B981"; // Emerald Green
             $statusText = "FULLY PAID / SETTLED";
             $statusBg = "#ECFDF5";
@@ -545,14 +591,16 @@ class BillingNotificationService {
             
             $success = !empty($result['success']);
             $provider = $result['provider'] ?? (defined('EMAIL_PROVIDER') ? EMAIL_PROVIDER : 'smtp');
-            $refMarker = $success ? ($cycleId ? "cycle:{$cycleId}" : null) : ($result['message'] ?? 'Failed');
+            $refMarker = $success 
+                ? ($paymentId ? "payment:{$paymentId}" : ($cycleId ? "cycle:{$cycleId}" : null)) 
+                : ($result['message'] ?? 'Failed');
 
             if (function_exists('logEmailDelivery')) {
                 logEmailDelivery($this->conn, $toEmail, $emailType, $success ? 'sent' : 'failed', $provider, $refMarker);
             }
 
             if ($success) {
-                error_log("[BillingNotifSvc] Email ({$emailType}) successfully delivered to {$toEmail} for cycle {$cycleId}");
+                error_log("[BillingNotifSvc] Email ({$emailType}) successfully delivered to {$toEmail} (payment: " . var_export($paymentId, true) . ", cycle: " . var_export($cycleId, true) . ")");
             } else {
                 error_log("[BillingNotifSvc] Email delivery failed to {$toEmail}: " . ($result['message'] ?? 'Unknown error'));
             }
@@ -567,8 +615,18 @@ class BillingNotificationService {
     }
 
     public function sendPaymentRejectionAlert($roomId, $userId, $amount, $reason) {
+        if (empty($userId) && !empty($roomId)) {
+            $uStmt = $this->conn->prepare("SELECT id, email, name FROM users WHERE room_id = ? AND role = 'tenant' LIMIT 1");
+            $uStmt->execute([$roomId]);
+            $uRow = $uStmt->fetch(PDO::FETCH_ASSOC);
+            if ($uRow) {
+                $userId = $uRow['id'];
+            }
+        }
+
         $settings = $this->getPreferences($userId, $roomId);
-        if (!$settings['notifications_enabled'] || !($settings['payment_alerts'] ?? true)) return false;
+        $notificationsEnabled = (bool)($settings['notifications_enabled'] ?? true);
+        $paymentAlertsEnabled = (bool)($settings['payment_alerts'] ?? true);
 
         $alert = [
             'type' => 'payment_rejected',
@@ -583,41 +641,62 @@ class BillingNotificationService {
         ];
 
         try {
-            $ownsTransaction = false;
-            if (!$this->conn->inTransaction()) {
-                $this->conn->beginTransaction();
-                $ownsTransaction = true;
-            }
-            
-            $notifId = $this->saveNotification($userId, $roomId, $alert);
-            
-            if ($ownsTransaction) {
-                $this->conn->commit();
+            if ($notificationsEnabled && $paymentAlertsEnabled && !empty($userId)) {
+                $ownsTransaction = false;
+                if (!$this->conn->inTransaction()) {
+                    $this->conn->beginTransaction();
+                    $ownsTransaction = true;
+                }
+                
+                $notifId = $this->saveNotification($userId, $roomId, $alert);
+                
+                if ($ownsTransaction) {
+                    $this->conn->commit();
+                }
+
+                $alert['id'] = $notifId;
+
+                if ($settings['push_enabled']) {
+                    $this->queuePush($userId, $alert);
+                }
             }
 
-            $alert['id'] = $notifId;
-
-            if ($settings['push_enabled']) {
-                $this->queuePush($userId, $alert);
+            // Transactional Rejection Email (Always attempted)
+            $tenantUser = null;
+            if ($userId) {
+                $userStmt = $this->conn->prepare("SELECT email, name FROM users WHERE id = ?");
+                $userStmt->execute([$userId]);
+                $tenantUser = $userStmt->fetch(PDO::FETCH_ASSOC);
+            }
+            if (!$tenantUser && !empty($roomId)) {
+                $rStmt = $this->conn->prepare("SELECT email, name FROM users WHERE room_id = ? AND role = 'tenant' LIMIT 1");
+                $rStmt->execute([$roomId]);
+                $tenantUser = $rStmt->fetch(PDO::FETCH_ASSOC);
             }
 
-            $userStmt = $this->conn->prepare("SELECT email, name FROM users WHERE id = ?");
-            $userStmt->execute([$userId]);
-            $tenantUser = $userStmt->fetch(PDO::FETCH_ASSOC);
-            if ($tenantUser && !empty($tenantUser['email'])) {
+            if ($tenantUser && !empty($tenantUser['email']) && filter_var($tenantUser['email'], FILTER_VALIDATE_EMAIL)) {
                 require_once __DIR__ . '/../utils/email_service.php';
                 $rejectionSubject = "Payment Rejected - Wattipid";
-                $rejectionHtml = "<p>Your payment of ₱" . number_format($amount, 2) . " has been rejected.</p><p><strong>Reason:</strong> " . htmlspecialchars($reason) . "</p><p>Please log in to Wattipid and upload a new payment proof.</p>";
-                $rejectionText = "Your payment of ₱" . number_format($amount, 2) . " has been rejected.\n\nReason: \"$reason\"\n\nPlease log in to Wattipid and upload a new payment proof.";
+                $rejectionHtml = "<div style=\"font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #ffffff; border: 1px solid #fee2e2; border-radius: 8px; overflow: hidden;\">
+                    <div style=\"background-color: #ef4444; padding: 20px; text-align: center;\">
+                        <h1 style=\"color: #ffffff; margin: 0; font-size: 20px;\">Payment Rejected</h1>
+                    </div>
+                    <div style=\"padding: 24px;\">
+                        <p style=\"font-size: 15px; color: #1f2937;\">Dear " . htmlspecialchars($tenantUser['name'] ?? 'Tenant') . ",</p>
+                        <p style=\"font-size: 14px; color: #4b5563; line-height: 1.6;\">Your payment of <strong>₱" . number_format($amount, 2) . "</strong> could not be verified by your landlord and has been rejected.</p>
+                        <div style=\"background-color: #fef2f2; border-left: 4px solid #ef4444; padding: 12px 16px; margin: 16px 0;\">
+                            <strong style=\"color: #991b1b;\">Reason:</strong> " . htmlspecialchars($reason) . "
+                        </div>
+                        <p style=\"font-size: 14px; color: #4b5563;\">Please log in to the Wattipid app, review your payment reference details, and submit a clear payment proof.</p>
+                    </div>
+                </div>";
+                $rejectionText = "Payment Rejected - Wattipid\n\nDear " . ($tenantUser['name'] ?? 'Tenant') . ",\n\nYour payment of ₱" . number_format($amount, 2) . " could not be verified by your landlord.\n\nReason: \"$reason\"\n\nPlease log in to Wattipid and upload a clear payment proof.";
                 sendEmail($tenantUser['email'], $tenantUser['name'] ?? '', $rejectionSubject, $rejectionHtml, $rejectionText, 'payment_rejected');
             }
 
             return true;
         } catch (Exception $e) {
-            if (isset($ownsTransaction) && $ownsTransaction && $this->conn->inTransaction()) {
-                $this->conn->rollBack();
-            }
-            error_log("[BillingNotifSvc] Error saving payment rejection alert: " . $e->getMessage());
+            error_log("[BillingNotifSvc] Error sending payment rejection alert: " . $e->getMessage());
             return false;
         }
     }

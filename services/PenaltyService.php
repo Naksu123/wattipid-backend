@@ -84,13 +84,26 @@ class PenaltyService {
             $settings = $this->getPenaltySettings();
             $today = date('Y-m-d');
             
-            // 2. Fast Pre-Check: Run once per calendar day unless explicitly forced
+            // 2. Fast Pre-Check: Run once per calendar day unless explicitly forced,
+            // but NEVER skip if there are overdue completed bills that have 0 penalty!
             if (!$force) {
                 $stmt = $this->conn->prepare("SELECT setting_value FROM settings WHERE setting_key = 'last_penalty_run_date'");
                 $stmt->execute();
                 $lastRun = $stmt->fetchColumn();
                 if ($lastRun === $today) {
-                    return ['success' => true, 'message' => 'Penalties already calculated today.', 'count' => 0];
+                    $unpenalizedStmt = $this->conn->query("
+                        SELECT COUNT(*) 
+                        FROM billing_cycles 
+                        WHERE payment_status IN ('unpaid', 'partially_paid', 'overdue')
+                          AND due_date IS NOT NULL 
+                          AND due_date < NOW()
+                          AND status = 'completed'
+                          AND (penalty_amount = 0 OR penalty_amount IS NULL)
+                    ");
+                    $unpenalizedCount = $unpenalizedStmt ? (int)$unpenalizedStmt->fetchColumn() : 0;
+                    if ($unpenalizedCount === 0) {
+                        return ['success' => true, 'message' => 'Penalties already calculated today.', 'count' => 0];
+                    }
                 }
             }
 
@@ -137,16 +150,25 @@ class PenaltyService {
                     billing_cycle_id, room_id, tenant_id, tenant_name, original_balance, 
                     penalty_amount, penalty_type, created_at, penalty_date, days_overdue, 
                     penalty_rate, running_total_penalty, current_outstanding_balance
-                ) VALUES (?, ?, ?, ?, ?, ?, 'percentage_daily', NOW(), ?, ?, ?, ?, ?)"
+                ) VALUES (?, ?, ?, ?, ?, ?, 'percentage_daily', NOW(), ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE 
+                    days_overdue = VALUES(days_overdue),
+                    penalty_amount = VALUES(penalty_amount),
+                    running_total_penalty = VALUES(running_total_penalty),
+                    current_outstanding_balance = VALUES(current_outstanding_balance),
+                    created_at = NOW()"
             );
 
             foreach ($overdueCycles as $cycle) {
                 $cycleId = $cycle['id'];
 
                 // 3. IDEMPOTENCY CHECK: Did we already generate a penalty for this bill today?
-                $checkExistingStmt->execute([$cycleId, $today]);
-                if ($checkExistingStmt->fetchColumn()) {
-                    continue; // Skip - already penalized today
+                // If cycle penalty is currently 0, or force=true, allow calculation so it catches up immediately.
+                if (!$force && (float)($cycle['penalty_amount'] ?? 0) > 0) {
+                    $checkExistingStmt->execute([$cycleId, $today]);
+                    if ($checkExistingStmt->fetchColumn()) {
+                        continue; // Skip - already penalized today
+                    }
                 }
 
                 // Ensure exact days calculation

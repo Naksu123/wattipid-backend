@@ -20,7 +20,7 @@ class IoTService {
     const MIN_REALISTIC_VOLTAGE = 100;        
     const MAX_REALISTIC_CURRENT = 25;         
     const MAX_ENERGY_DELTA = 0.05;            // Max kWh delta per reading (0.05 kWh = 36000W over 5s). Blocks fake jumps!
-    const MIN_LOG_INTERVAL_SECONDS = 2;       // Minimum seconds between DB inserts (prevents telemetry flooding)
+    const MIN_LOG_INTERVAL_SECONDS = 1;       // Minimum seconds between DB inserts (allows smooth 2-second telemetry)
 
     public function __construct($dbConnection) {
         $this->conn = $dbConnection;
@@ -30,7 +30,7 @@ class IoTService {
         $this->roomRepo = new RoomRepository($dbConnection);
     }
 
-    public function logConsumption($roomId, $voltage, $current, $power, $cumulativeEnergy) {
+    public function logConsumption($roomId, $voltage, $current, $power, $cumulativeEnergy, $source = 'hardware') {
         // ========================================
         // GHOST FIX: IoT Data Validation Pipeline
         // ========================================
@@ -73,15 +73,24 @@ class IoTService {
 
         error_log("IoT DEBUG: Validation PASSED for {$roomId} - V:{$voltage} A:{$current} W:{$power}");
 
-        // 4. Anti-duplicate: Check minimum interval between logs
+        // --- 1. LIVE MONITORING: Always update live cache & heartbeat immediately for real-time dashboard ---
+        $pf = ($voltage * $current > 0) ? round($power / ($voltage * $current), 2) : 1.0;
+        $isSimulated = ($source === 'simulation');
+        $liveData = [
+            'voltage' => (float)$voltage,
+            'current' => (float)$current,
+            'power' => (float)$power,
+            'energy' => (float)$cumulativeEnergy,
+            'powerFactor' => (float)$pf,
+            'online' => true,
+            'lastSeen' => date('Y-m-d H:i:s'),
+            'source' => $source,
+            'is_simulated' => $isSimulated
+        ];
+        @file_put_contents(sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'live_sensor_' . md5($roomId) . '.json', json_encode($liveData));
+
+        // 4. Retrieve last historical log to determine database cadence and energy delta
         $lastLog = $this->consumptionRepo->getLastLog($roomId);
-        if ($lastLog) {
-            $lastTime = strtotime($lastLog['timestamp']);
-            $timeDiff = abs(time() - $lastTime); // abs() fixes PHP/MySQL timezone mismatch
-            if ($timeDiff < self::MIN_LOG_INTERVAL_SECONDS) {
-                return ['success' => true, 'skipped' => true, 'reason' => 'Too frequent'];
-            }
-        }
 
         $shouldRunEngine = !$lastLog || (time() - strtotime($lastLog['timestamp']) > 30);
 
@@ -137,12 +146,20 @@ class IoTService {
         $billingService = new BillingCycleService($this->conn);
         $billingCycleId = $billingService->getActiveCycleId($roomId);
 
-        // --- Insert the Log ---
-        try {
-            $this->consumptionRepo->insertLog($roomId, $tenantName, $voltage, $current, $power, $energyDelta, $cumulativeEnergy, $cost, $billingCycleId);
-            error_log("IoT DEBUG: INSERT SUCCESS for {$roomId} (Cycle ID: $billingCycleId)");
-        } catch (Exception $e) {
-            error_log("IoT DEBUG: INSERT FAILED for {$roomId}: " . $e->getMessage());
+        // --- 2. HISTORICAL STORAGE: Persist to MySQL at controlled intervals (60s) or on major load events
+        $lastPower = isset($lastLog['power']) ? (float)$lastLog['power'] : 0.0;
+        $isFirstLog = !$lastLog;
+        $isTimeForHistory = $timeElapsed >= 60;
+        $isSignificantEvent = $lastLog && abs($power - $lastPower) >= 40.0;
+        $isStateChange = $lastLog && (($power <= 0.05 && $lastPower > 0.05) || ($power > 0.05 && $lastPower <= 0.05));
+
+        if ($isFirstLog || $isTimeForHistory || $isSignificantEvent || $isStateChange) {
+            try {
+                $this->consumptionRepo->insertLog($roomId, $tenantName, $voltage, $current, $power, $energyDelta, $cumulativeEnergy, $cost, $billingCycleId, $source);
+                error_log("IoT Historical: Logged {$roomId} ({$source}) to DB (P:{$power}W, TimeDiff:{$timeElapsed}s)");
+            } catch (Exception $e) {
+                error_log("IoT Historical Error for {$roomId}: " . $e->getMessage());
+            }
         }
 
         // --- Fire Legacy Notification Engine (User Configured Alerts) ---

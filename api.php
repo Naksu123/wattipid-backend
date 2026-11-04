@@ -111,18 +111,27 @@ try {
         $authenticatedUser = $auth->tryHandle();
     }
 
-    // Lazy Evaluation: Calculate daily penalties if they haven't been calculated today.
-    // Triggers for landlords or whenever any user accesses billing / payment actions
-    $billingActions = ['getTenantBillingOverview', 'getAvailableBillingCycles', 'getBillingHistory', 'syncState'];
+    // Lazy Evaluation: Calculate daily penalties automatically whenever users open the app
+    // or access billing/payment/dashboard actions (acts as an automatic cron catch-up)
+    $billingActions = [
+        'getBillingCycle',
+        'getTenantBillingOverview',
+        'getAvailableBillingCycles',
+        'getBillingHistory',
+        'getTenantBillingCycles',
+        'getOverdueAccounts',
+        'getPaymentWidgets',
+        'getNotifications',
+        'syncState'
+    ];
     if ($authenticatedUser && ($authenticatedUser['role'] === 'landlord' || in_array($action, $billingActions))) {
         $penaltySvc = new PenaltyService($conn);
-        // calculateDailyPenalties() has a built-in cache check so it only runs once per day
+        // calculateDailyPenalties() evaluates overdue bills and applies multi-day accumulated penalties
         $penaltySvc->calculateDailyPenalties();
     }
 
-    // Lazy Evaluation: Check billing notifications for tenants.
-    // Fires budget threshold, due date, and overdue/penalty alerts with built-in cooldowns.
-    if ($authenticatedUser && $authenticatedUser['role'] === 'tenant' && $authenticatedUser['room_id']) {
+    // Lazy Evaluation: Check billing notifications for tenants (skip on high-frequency real-time telemetry polling).
+    if ($action !== 'getLatestConsumption' && $authenticatedUser && $authenticatedUser['role'] === 'tenant' && $authenticatedUser['room_id']) {
         $billingNotifSvc = new BillingNotificationService($conn);
         $billingNotifSvc->checkAll($authenticatedUser['room_id'], $authenticatedUser['id']);
     }

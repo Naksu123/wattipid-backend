@@ -79,7 +79,7 @@ class PenaltyController {
             return;
         }
         
-        $result = $this->penaltyService->calculateDailyPenalties();
+        $result = $this->penaltyService->calculateDailyPenalties(true);
         echo json_encode($result);
     }
 

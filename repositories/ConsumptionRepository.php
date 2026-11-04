@@ -7,14 +7,14 @@ class ConsumptionRepository {
     }
 
     public function getLastLog($roomId) {
-        $stmt = $this->conn->prepare("SELECT timestamp, energy_cumulative FROM consumption_logs WHERE room_id = ? ORDER BY id DESC LIMIT 1");
+        $stmt = $this->conn->prepare("SELECT timestamp, energy_cumulative, power FROM consumption_logs WHERE room_id = ? ORDER BY id DESC LIMIT 1");
         $stmt->execute([$roomId]);
         return $stmt->fetch(PDO::FETCH_ASSOC);
     }
 
-    public function insertLog($roomId, $tenantName, $voltage, $current, $power, $energyDelta, $cumulativeEnergy, $cost, $billingCycleId = null) {
-        $stmt = $this->conn->prepare("INSERT INTO consumption_logs (room_id, tenant_name, voltage, current_val, power, energy, energy_cumulative, cost, billing_cycle_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
-        return $stmt->execute([$roomId, $tenantName, $voltage, $current, $power, $energyDelta, $cumulativeEnergy, $cost, $billingCycleId]);
+    public function insertLog($roomId, $tenantName, $voltage, $current, $power, $energyDelta, $cumulativeEnergy, $cost, $billingCycleId = null, $dataSource = 'hardware') {
+        $stmt = $this->conn->prepare("INSERT INTO consumption_logs (room_id, tenant_name, voltage, current_val, power, energy, energy_cumulative, cost, billing_cycle_id, data_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        return $stmt->execute([$roomId, $tenantName, $voltage, $current, $power, $energyDelta, $cumulativeEnergy, $cost, $billingCycleId, $dataSource]);
     }
 
     public function getRollingAveragePower($roomId, $limit = 10) {
