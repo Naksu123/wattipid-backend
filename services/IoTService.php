@@ -75,7 +75,6 @@ class IoTService {
 
         // --- 1. LIVE MONITORING: Always update live cache & heartbeat immediately for real-time dashboard ---
         $pf = ($voltage * $current > 0) ? round($power / ($voltage * $current), 2) : 1.0;
-        $isSimulated = ($source === 'simulation');
         $liveData = [
             'voltage' => (float)$voltage,
             'current' => (float)$current,
@@ -84,8 +83,8 @@ class IoTService {
             'powerFactor' => (float)$pf,
             'online' => true,
             'lastSeen' => date('Y-m-d H:i:s'),
-            'source' => $source,
-            'is_simulated' => $isSimulated
+            'source' => 'hardware',
+            'is_simulated' => false
         ];
         @file_put_contents(sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'live_sensor_' . md5($roomId) . '.json', json_encode($liveData));
 

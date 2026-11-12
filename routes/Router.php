@@ -208,6 +208,10 @@ class Router {
             case 'getTransactionHistory':
                 $this->dashboardController->getTransactionHistory($authenticatedUser, $data);
                 return true;
+            case 'getRoomsConsumptionComparison':
+                $this->dashboardController->getRoomsConsumptionComparison($authenticatedUser, $data);
+                return true;
+
             case 'getAvailableBillingCycles':
                 $this->dashboardController->getAvailableBillingCycles($authenticatedUser, $data);
                 return true;

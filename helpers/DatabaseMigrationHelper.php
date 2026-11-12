@@ -241,6 +241,16 @@ class DatabaseMigrationHelper {
             self::addColumnIfMissing($conn, 'consumption_logs', 'data_source', "VARCHAR(20) NOT NULL DEFAULT 'hardware'");
             self::addColumnIfMissing($conn, 'rooms', 'is_simulated', "TINYINT(1) NOT NULL DEFAULT 0");
 
+            // 10. Ensure high-performance composite index on consumption_logs for room analytics queries
+            try {
+                $checkIndex = $conn->query("SHOW INDEX FROM consumption_logs WHERE Key_name = 'idx_time_room_energy_cost'");
+                if (!$checkIndex || $checkIndex->rowCount() === 0) {
+                    $conn->exec("ALTER TABLE consumption_logs ADD INDEX idx_time_room_energy_cost (timestamp, room_id, energy, cost)");
+                }
+            } catch (Throwable $t) {
+                error_log("[DatabaseMigrationHelper] idx_time_room_energy_cost notice: " . $t->getMessage());
+            }
+
             self::$migrated = true;
         } catch (Throwable $e) {
             error_log("[DatabaseMigrationHelper] Error ensuring schema: " . $e->getMessage());

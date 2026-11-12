@@ -111,8 +111,8 @@ class IoTController {
             'powerFactor' => $pf,
             'online' => $isOnline,
             'lastSeen' => $log['timestamp'],
-            'source' => $source,
-            'is_simulated' => ($source === 'simulation')
+            'source' => 'hardware',
+            'is_simulated' => false
         ]]);
     }
 

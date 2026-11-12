@@ -124,4 +124,17 @@ class DashboardController {
         $result = $this->dashboardService->getYearlyBreakdown($roomId, $user['id'], $user['role'], (int)$year);
         ResponseHelper::sendRaw($result);
     }
+
+    public function getRoomsConsumptionComparison($user, $data) {
+        if (($user['role'] ?? '') !== 'landlord') {
+            ResponseHelper::error("Access Denied: Landlord privileges required.", 403);
+            return;
+        }
+        $period = $data['period'] ?? 'weekly';
+        $dateStr = $data['dateStr'] ?? null;
+        $year = $data['year'] ?? null;
+        $month = $data['month'] ?? null;
+        $result = $this->dashboardService->getRoomsPeriodComparison($period, $dateStr, $year, $month);
+        ResponseHelper::sendRaw($result);
+    }
 }

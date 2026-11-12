@@ -698,4 +698,98 @@ class DashboardService
 
         return ['success' => true, 'data' => $result];
     }
+
+    /**
+     * Compare all managed rooms for an identical period and date range.
+     * Enforces landlord multi-room visibility and calculates rankings, differences, and property averages.
+     */
+    public function getRoomsPeriodComparison($period = 'weekly', $dateStr = null, $year = null, $month = null)
+    {
+        if ($period === 'daily') {
+            $baseDate = $dateStr ? strtotime($dateStr) : time();
+            $start = date('Y-m-d 00:00:00', $baseDate);
+            $end = date('Y-m-d 00:00:00', strtotime('+1 day', $baseDate));
+        } elseif ($period === 'weekly') {
+            $baseDate = $dateStr ? strtotime($dateStr) : time();
+            $dayOfWeek = date('w', $baseDate);
+            $offset = ($dayOfWeek == 0 ? 6 : $dayOfWeek - 1);
+            $start = date('Y-m-d 00:00:00', strtotime("-$offset days", $baseDate));
+            $end = date('Y-m-d 00:00:00', strtotime('+7 days', strtotime($start)));
+        } elseif ($period === 'yearly') {
+            $targetYear = $year ? (int)$year : ($dateStr ? (int)date('Y', strtotime($dateStr)) : (int)date('Y'));
+            $start = sprintf('%04d-01-01 00:00:00', $targetYear);
+            $end = sprintf('%04d-01-01 00:00:00', $targetYear + 1);
+        } else {
+            // monthly
+            $targetYear = $year ? (int)$year : ($dateStr ? (int)date('Y', strtotime($dateStr)) : (int)date('Y'));
+            $targetMonth = $month ? (int)$month : ($dateStr ? (int)date('n', strtotime($dateStr)) : (int)date('n'));
+            $start = sprintf('%04d-%02d-01 00:00:00', $targetYear, $targetMonth);
+            $end = date('Y-m-d 00:00:00', strtotime('+1 month', strtotime($start)));
+        }
+
+        $stmt = $this->conn->prepare("
+            SELECT r.room_id, r.room_name, r.status, r.tenant_name, r.utility_rate,
+                   COALESCE(SUM(c.energy), 0) AS totalEnergy,
+                   COALESCE(SUM(c.cost), 0) AS totalCost,
+                   COUNT(c.id) AS entries
+            FROM rooms r
+            LEFT JOIN consumption_logs c ON r.room_id = c.room_id AND c.timestamp >= ? AND c.timestamp < ?
+            WHERE r.status != 'archived'
+            GROUP BY r.room_id, r.room_name, r.status, r.tenant_name, r.utility_rate
+            ORDER BY totalEnergy DESC
+        ");
+        $stmt->execute([$start, $end]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $defaultRate = $this->getCurrentRate();
+        $roomsData = [];
+        $totalPropertyEnergy = 0;
+        $totalPropertyCost = 0;
+
+        foreach ($rows as $row) {
+            $energy = (float)$row['totalEnergy'];
+            $roomRate = !empty($row['utility_rate']) && (float)$row['utility_rate'] > 0 ? (float)$row['utility_rate'] : $defaultRate;
+            $cost = (float)$row['totalCost'];
+            if ($cost <= 0 && $energy > 0) {
+                $cost = round($energy * $roomRate, 2);
+            }
+            $totalPropertyEnergy += $energy;
+            $totalPropertyCost += $cost;
+
+            $roomsData[] = [
+                'room_id' => $row['room_id'],
+                'room_name' => $row['room_name'],
+                'status' => $row['status'],
+                'tenant_name' => $row['tenant_name'],
+                'totalEnergy' => $energy,
+                'totalCost' => $cost,
+                'entries' => (int)$row['entries'],
+            ];
+        }
+
+        $roomCount = count($roomsData);
+        $avgPropertyEnergy = $roomCount > 0 ? ($totalPropertyEnergy / $roomCount) : 0;
+        $avgPropertyCost = $roomCount > 0 ? ($totalPropertyCost / $roomCount) : 0;
+
+        $highestRoom = !empty($roomsData) ? $roomsData[0] : null;
+        $activeRooms = array_values(array_filter($roomsData, function($r) { return $r['totalEnergy'] > 0; }));
+        $lowestRoom = !empty($activeRooms) ? end($activeRooms) : (!empty($roomsData) ? end($roomsData) : null);
+
+        return [
+            'success' => true,
+            'data' => [
+                'period' => $period,
+                'startDate' => $start,
+                'endDate' => $end,
+                'rooms' => $roomsData,
+                'totalPropertyEnergy' => $totalPropertyEnergy,
+                'totalPropertyCost' => $totalPropertyCost,
+                'avgPropertyEnergy' => $avgPropertyEnergy,
+                'avgPropertyCost' => $avgPropertyCost,
+                'highestRoom' => $highestRoom,
+                'lowestRoom' => $lowestRoom,
+                'roomCount' => $roomCount,
+            ]
+        ];
+    }
 }
